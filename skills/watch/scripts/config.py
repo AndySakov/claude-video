@@ -150,6 +150,7 @@ def get_config(*, backend_override: str | None = None) -> dict:
         'sub_lang': setting('WATCH_SUB_LANG', 'auto'),
         'cookies_file': setting('WATCH_COOKIES_FILE'),
         'cookies_from_browser': setting('WATCH_COOKIES_FROM_BROWSER'),
+        'cache_dir': setting('WATCH_CACHE_DIR'),
         'whisperx_bin': setting('WATCH_WHISPERX_BIN'),
         'whisperx_model': setting('WATCH_WHISPERX_MODEL', 'small'),
         'whisperx_device': setting('WATCH_WHISPERX_DEVICE', 'cpu'),

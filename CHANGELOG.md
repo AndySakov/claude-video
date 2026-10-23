@@ -2,6 +2,17 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Added
+- **One interleaved timeline.** The local report's separate Frames and Transcript sections are replaced by a single `## Timeline`: `[MM:SS] FRAME <file> (<reason>)` markers interleaved with speech, so what was said sits under what was on screen. Each run also writes `timeline.md` and a machine-readable `timeline.json`.
+- Speech fragments are merged into sentence-sized lines (split at punctuation, pauses, size bounds, `>>` speaker changes, and frame boundaries).
+- `## Chapters` from yt-dlp metadata or container chapters, and a truncated `## Description` for URLs.
+- **Timeline cache** in `~/.cache/watch/timelines` (50 most recent): a rerun with the same source and evidence options reuses the saved report and frames without network, download, or transcription. `--refresh`, `--no-cache`, and `WATCH_CACHE_DIR` (`off` disables). Partial or failed runs are never cached.
+
+### Fixed
+- YouTube rolling auto-captions no longer repeat every line two or three times: a cue's first line that only re-displays the previous cue's last line, and the 10 ms re-display cues, are dropped. Independent repeated speech is kept.
+
 ## [0.3.2] — 2026-09-25
 
 ### Changed

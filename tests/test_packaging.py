@@ -33,7 +33,7 @@ def test_copied_skill_runs_outside_repository(tmp_path, static_clip):
     result = subprocess.run([sys.executable, str(target / 'scripts/watch.py'), str(static_clip), '--no-whisper', '--out-dir', str(tmp_path / 'output')],
                             capture_output=True, encoding='utf-8', env=dict(os.environ))
     assert result.returncode == 0, result.stderr
-    assert '**Detail:** balanced' in result.stdout and 'reason=uniform' in result.stdout
+    assert '**Detail:** balanced' in result.stdout and '(uniform)' in result.stdout
 
 
 def test_skill_documents_and_bundles_the_gemini_engine():
@@ -44,8 +44,8 @@ def test_skill_documents_and_bundles_the_gemini_engine():
         assert needle in skill, needle
     assert 'CLAUDE_SKILL_DIR' not in skill
     runtime = sorted(p.name for p in (ROOT / 'skills/watch/scripts').glob('*.py'))
-    assert runtime == ['config.py', 'download.py', 'frames.py', 'gemini.py', 'local_whisperx.py',
-                       'runtime.py', 'setup.py', 'transcribe.py', 'watch.py', 'whisper.py']
+    assert runtime == ['cache.py', 'config.py', 'download.py', 'frames.py', 'gemini.py', 'local_whisperx.py',
+                       'runtime.py', 'setup.py', 'timeline.py', 'transcribe.py', 'watch.py', 'whisper.py']
 
 
 def test_copied_skill_runs_gemini_engine_check_outside_repository(tmp_path):

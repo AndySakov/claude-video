@@ -268,6 +268,19 @@ A 16×16 **RGB** thumbnail pass removes near-duplicates using mean channel diffe
 
 After reading a transcript, the agent can pin “look here” moments with `--timestamps`. These consume the frame budget first. A caption-only pass may not download a video; in that case the cue pass uses the URL again. An audio-only download cannot supply cue frames.
 
+## The timeline and its cache
+
+The local engine's report is one chronological timeline: `FRAME` markers interleaved with speech merged into sentence-sized lines, so what was said sits directly under what was on screen. Chapters and a short description are included when the source has them.
+
+```text
+[00:00] FRAME frame_0001.jpg (first-frame)
+[00:00] all right so here we are in front of the elephants
+[00:14] FRAME frame_0007.jpg (scene-change)
+[00:15] the cool thing about these guys is that they have really long trunks
+```
+
+Each run writes `timeline.md` and a machine-readable `timeline.json`. Complete runs are cached in `~/.cache/watch/timelines` (the 50 most recently used), keyed by the source and every option that changes the evidence. Asking again with the same options reuses the saved timeline and frames without downloading or transcribing. Use `--refresh` to rebuild, `--no-cache` for a one-off run, or set `WATCH_CACHE_DIR` to move the cache (`off` disables it). Only text and the selected frames are cached, never media or audio.
+
 ## Captions, authentication, and partial results
 
 Auto caption selection uses original-language evidence when available, preferring same-language manual captions before original ASR. It requests at most one track. Unknown provenance is labeled unknown. `--sub-lang CODE` / `WATCH_SUB_LANG` chooses an explicit language, which may be a translation.

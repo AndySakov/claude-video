@@ -58,19 +58,19 @@ def test_default_is_balanced(cut_clip: Path):
 
 def test_timestamps_add_cue_frames_to_detail(cut_clip: Path):
     out = _run(cut_clip, "--detail", "balanced", "--timestamps", "1,3")
-    assert "reason=transcript-cue" in out
-    assert "reason=scene-change" in out  # detail frames still present (additive)
+    assert "(transcript-cue)" in out
+    assert "(scene-change)" in out  # detail frames still present (additive)
 
 
 def test_timestamps_with_transcript_detail_is_cue_only(cut_clip: Path):
     out = _run(cut_clip, "--detail", "transcript", "--timestamps", "1,3")
-    assert "reason=transcript-cue" in out
-    assert "reason=scene-change" not in out
-    assert "reason=keyframe" not in out
+    assert "(transcript-cue)" in out
+    assert "(scene-change)" not in out
+    assert "(keyframe)" not in out
 
 
 def _frame_lines(out: str) -> int:
-    return sum(1 for line in out.splitlines() if "/frames/frame_" in line.replace("\\", "/") and "(t=" in line)
+    return sum(1 for line in out.splitlines() if "] FRAME frame_" in line)
 
 
 def test_dedup_collapses_static_by_default(static_clip: Path):
@@ -178,7 +178,7 @@ def test_user_out_dir_and_local_source_preserved(static_clip, tmp_path):
     source.write_bytes(static_clip.read_bytes())
     sentinel = tmp_path / 'keep.txt'
     sentinel.write_text('keep')
-    _run(source, '--out-dir', str(tmp_path))
+    _run(source, '--out-dir', str(tmp_path), '--no-cache')
     assert source.read_bytes() == static_clip.read_bytes() and sentinel.read_text() == 'keep'
     assert list(tmp_path.glob('watch-*/frames/frame_*.jpg'))
 
@@ -244,7 +244,7 @@ def test_upload_is_deleted_even_when_the_question_fails(monkeypatch, capsys, sta
     assert watch.main() == 1
     assert deleted == ['files/abc']
     out = capsys.readouterr().out
-    assert 'Gemini quota' in out and '--engine local' in out and '## Frames' not in out
+    assert 'Gemini quota' in out and '--engine local' in out and '## Timeline' not in out
 
 
 def test_engine_local_never_contacts_gemini(monkeypatch, static_clip, capsys):
@@ -254,13 +254,13 @@ def test_engine_local_never_contacts_gemini(monkeypatch, static_clip, capsys):
         monkeypatch.setattr(gemini, name, lambda *a, **kw: pytest.fail('local engine must not contact Google'))
     monkeypatch.setattr(sys, 'argv', ['watch', str(static_clip), '--engine', 'local', '--no-whisper'])
     assert watch.main() == 0
-    assert '## Frames' in capsys.readouterr().out
+    assert '## Timeline' in capsys.readouterr().out
 
 
 def test_no_key_keeps_the_local_pipeline(monkeypatch, static_clip, capsys):
     monkeypatch.setattr(sys, 'argv', ['watch', str(static_clip), '--no-whisper'])
     assert watch.main() == 0
-    assert '## Frames' in capsys.readouterr().out
+    assert '## Timeline' in capsys.readouterr().out
 
 
 def test_explicit_gemini_without_key_fails_before_any_work(monkeypatch):
