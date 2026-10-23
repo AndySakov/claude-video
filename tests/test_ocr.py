@@ -29,6 +29,17 @@ def test_far_apart_words_and_low_confidence_lines_are_separate_or_dropped():
     assert sorted(l['text'] for l in ocr.parse_tsv(tsv)) == ['left', 'right']
 
 
+def test_clean_strips_symbol_tokens_and_stray_end_characters():
+    assert ocr.clean('4 Never open a call 4 ©') == 'Never open a call'
+    assert ocr.clean("you've got © their full |") == "you've got their full"
+    assert ocr.clean('I said a') == 'I said a'
+
+
+def test_adaptive_rate_is_dense_for_short_clips_and_capped():
+    assert ocr.sample_rate(55) == 3.0 and ocr.sample_rate(300) == 2.0 and ocr.sample_rate(400) == 1.5 and ocr.sample_rate(1200) == 0.5
+    assert ocr.sample_rate(55, 1.0) == 1.0
+
+
 @pytest.mark.parametrize('text,ok', [('Book now', True), ('a.', False), ('=|]', False), ('Q3', False), ('+18% YoY', True)])
 def test_plausible_rejects_ocr_confetti(text, ok):
     assert ocr.plausible(text) is ok
@@ -143,7 +154,7 @@ def test_watch_interleaves_text_rows_and_caches_them(monkeypatch, capsys, text_r
     monkeypatch.setattr(sys, 'argv', ['watch', str(text_reel), '--no-whisper'])
     assert watch.main() == 0
     out = capsys.readouterr().out
-    assert '] TEXT: ' in out and 'OCR via tesseract, 7 samples at 1 fps' in out and 'cached;' in out
+    assert '] TEXT: ' in out and 'OCR via tesseract, 21 samples at 3 fps' in out and 'cached;' in out
     monkeypatch.setenv('WATCH_OCR', 'none')
     assert watch.main() == 0
     assert '] TEXT: ' not in capsys.readouterr().out, 'OCR settings are part of the cache key'

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """On-screen text as timed events: burned-in captions, slides, UI, and code.
 
-A uniform OCR sample (default 1 fps, separate from the frames the agent views) is
+A uniform OCR sample (adaptive rate, separate from the frames the agent views) is
 read by Tesseract or, on macOS, Apple Vision. Lines are tracked across samples so
 each piece of text is reported once, when it appears; word-by-word caption reveals
 grow into one line instead of one line per word.
@@ -28,6 +28,10 @@ from runtime import diagnostic, run_text
 CHOICES = ('auto', 'tesseract', 'vision', 'none')
 OCR_RESOLUTION = 1280
 MAX_SAMPLES = 600
+# Short-form captions change every ~0.5 s, so short clips are sampled densely; measured on a
+# real Reel, 3 fps recovered most caption words that 1 fps skipped. (duration ≤ s, fps)
+AUTO_RATES = ((180.0, 3.0), (600.0, 2.0))
+KEEP_SINGLE = {'I', 'a', 'A'}
 BRIGHT_THRESHOLD = 220
 MIN_WORD_CONF = 30.0  # Tesseract 0-100; low words are kept when their line is confident
 MIN_LINE_CONF = 60.0
@@ -58,8 +62,21 @@ def resolve(choice: str) -> tuple[str | None, str | None]:
     return None, None
 
 
-def sample_rate(duration: float, fps: float) -> float:
+def sample_rate(duration: float, fps: float | None = None) -> float:
+    """``fps`` None means adaptive: dense for short clips, 1 fps for long ones, ≤ MAX_SAMPLES."""
+    if fps is None:
+        fps = next((rate for limit, rate in AUTO_RATES if duration <= limit), 1.0)
     return min(fps, MAX_SAMPLES / duration) if duration > 0 else fps
+
+
+def clean(text: str) -> str:
+    """Drop symbol-only tokens and stray single characters at the ends (texture and edge noise)."""
+    tokens = [t for t in text.split() if any(ch.isalnum() for ch in t)]
+    while tokens and len(tokens[-1]) == 1 and tokens[-1] not in KEEP_SINGLE:
+        tokens.pop()
+    while tokens and len(tokens[0]) == 1 and tokens[0] not in KEEP_SINGLE:
+        tokens.pop(0)
+    return ' '.join(tokens)
 
 
 def extract_samples(video_path: str, out_dir: Path, *, rate: float, start: float, end: float,
@@ -135,7 +152,7 @@ def parse_tsv(tsv: str) -> list[dict]:
     out = []
     for line in lines:
         line.sort(key=lambda w: w['x'])
-        text = ' '.join(w['text'] for w in line)[:MAX_LINE_CHARS]
+        text = clean(' '.join(w['text'] for w in line))[:MAX_LINE_CHARS]
         conf = sum(w['conf'] for w in line) / len(line)
         if conf >= MIN_LINE_CONF and plausible(text):
             out.append({'text': text, 'conf': conf / 100, 'y': min(w['cy'] for w in line)})
@@ -180,8 +197,8 @@ def read_vision(samples: list[dict]) -> list[list[str]]:
         try:
             item = json.loads(row)
             by_path[item['path']] = [
-                {'text': str(l['text'])[:MAX_LINE_CHARS], 'conf': float(l['conf']), 'y': float(l['y'])}
-                for l in item['lines'] if float(l['conf']) >= MIN_VISION_CONF and plausible(str(l['text']))]
+                {'text': clean(str(l['text']))[:MAX_LINE_CHARS], 'conf': float(l['conf']), 'y': float(l['y'])}
+                for l in item['lines'] if float(l['conf']) >= MIN_VISION_CONF and plausible(clean(str(l['text'])))]
         except (ValueError, KeyError, TypeError):
             continue
     if samples and not by_path:
@@ -256,7 +273,7 @@ def absorb_reveals(events: list[dict], interval: float) -> list[dict]:
     return sorted(out, key=lambda e: e['start'])
 
 
-def on_screen_text(video_path: str, work: Path, backend: str, *, lang: str, fps: float,
+def on_screen_text(video_path: str, work: Path, backend: str, *, lang: str, fps: float | None,
                    start: float, end: float) -> tuple[list[dict], dict]:
     rate = sample_rate(end - start, fps)
     directory = work / 'ocr'

@@ -157,7 +157,7 @@ def get_config(*, backend_override: str | None = None) -> dict:
         'cache_dir': setting('WATCH_CACHE_DIR'),
         'ocr': ocr,
         'ocr_lang': setting('WATCH_OCR_LANG', 'eng') or 'eng',
-        'ocr_fps': positive_number(setting('WATCH_OCR_FPS', '1') or '1', 'WATCH_OCR_FPS'),
+        'ocr_fps': None if setting('WATCH_OCR_FPS', 'auto') in ('', 'auto') else positive_number(setting('WATCH_OCR_FPS'), 'WATCH_OCR_FPS'),
         'whisperx_bin': setting('WATCH_WHISPERX_BIN'),
         'whisperx_model': setting('WATCH_WHISPERX_MODEL', 'small'),
         'whisperx_device': setting('WATCH_WHISPERX_DEVICE', 'cpu'),
