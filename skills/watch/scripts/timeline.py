@@ -11,7 +11,7 @@ import json
 import re
 from pathlib import Path
 
-VERSION = 1
+VERSION = 2
 # Merged-line bounds: long enough to carry a sentence, short enough to cite precisely.
 MAX_LINE_WORDS = 40
 MAX_LINE_SECONDS = 20.0
@@ -98,21 +98,25 @@ def build(*, frames: list[dict], lines: list[dict], text: list[dict] = (), chapt
         'frames': [{'file': Path(f['path']).name, 't': round(f['timestamp_seconds'], 3),
                     'reason': f.get('reason', 'selected')} for f in frames],
         'lines': [{'start': round(l['start'], 3), 'end': round(l['end'], 3), 'text': l['text']} for l in lines],
-        'text': [{'start': round(e['start'], 3), 'end': round(e['end'], 3), 'text': e['text']} for e in text],
+        'text': [{'start': round(e['start'], 3), 'end': round(e['end'], 3), 'text': e['text'],
+                  'kind': e.get('kind', 'text')} for e in text],
     }
 
 
 def events(data: dict) -> list[str]:
-    """Chronological rows: FRAME, then on-screen TEXT, then speech at the same instant.
+    """Chronological rows: FRAME, on-screen TEXT, CAPTION, then speech at the same instant.
 
     Text that appears in the same OCR sample (a slide's lines) shares one row.
     """
     rows = [(f['t'], 0, f"[{clock(f['t'])}] FRAME {f['file']} ({f['reason']})") for f in data['frames']]
     shown: dict[float, list[str]] = {}
     for item in data.get('text', []):
-        shown.setdefault(item['start'], []).append(item['text'])
+        if item.get('kind') == 'caption':
+            rows.append((item['start'], 2, f"[{clock(item['start'])}] CAPTION: {item['text']}"))
+        else:
+            shown.setdefault(item['start'], []).append(item['text'])
     rows += [(t, 1, f"[{clock(t)}] TEXT: {' / '.join(texts)}") for t, texts in shown.items()]
-    rows += [(l['start'], 2, f"[{clock(l['start'])}] {l['text']}") for l in data['lines']]
+    rows += [(l['start'], 3, f"[{clock(l['start'])}] {l['text']}") for l in data['lines']]
     return [row for _, _, row in sorted(rows, key=lambda r: (r[0], r[1]))]
 
 
@@ -133,11 +137,12 @@ def render_sections(data: dict, frames_dir: Path | None) -> str:
                    'A frame shows what is on screen from its time until the next FRAME line.')
         out.append('')
     if data.get('text'):
-        out.append('`TEXT:` lines are on-screen text read by OCR when it appears (burned-in captions, slides, '
-                   'UI; `/` separates lines shown together). OCR can misread stylized text.')
+        out.append('`CAPTION:` lines are burned-in captions read by OCR and merged into phrases (usually the '
+                   'spoken words). `TEXT:` lines are other on-screen text (slides, UI, overlays) when it appears; '
+                   '`/` separates lines shown together. OCR can misread stylized text.')
         out.append('')
     if data['frames'] or data.get('text'):
-        out.append('`[MM:SS]` is absolute source time. Lines without a `FRAME`/`TEXT:` tag are speech.')
+        out.append('`[MM:SS]` is absolute source time. Lines without a tag are speech.')
         out.append('')
     if data['speech_source']:
         out.append(f"_Speech: {data['speech_source']}._")

@@ -384,14 +384,21 @@ def main() -> int:
         p(f"- **Cue frames:** {len(cue_frames)} at transcript-flagged timestamps (transcript-cue{drop_note})")
     if frames:
         p(f"- **Frame size:** max {args.resolution}px wide, max 1998px tall")
+    lines = timeline.merge_lines(transcript_segments, [f["timestamp_seconds"] for f in frames])
     if ocr_meta:
-        p(f"- **On-screen text:** {len(text_events) or 'none detected'}"
-          f"{' lines' if text_events else ''} (OCR via {ocr_meta['backend']}, {ocr_meta['samples']} samples "
-          f"at {ocr_meta['rate']:.2g} fps)")
+        heard = len(text_events)
+        text_events = ocr.drop_spoken(text_events, lines)
+        captions = sum(e.get("kind") == "caption" for e in text_events)
+        counts = ", ".join(part for part in (
+            f"{captions} caption line{'s' if captions != 1 else ''}" if captions else "",
+            f"{len(text_events) - captions} text line{'s' if len(text_events) - captions != 1 else ''}"
+            if len(text_events) > captions else "",
+            f"{heard - len(text_events)} spoken captions dropped" if heard > len(text_events) else "") if part)
+        p(f"- **On-screen text:** {counts or 'none detected'} (OCR via {ocr_meta['backend']}, "
+          f"{ocr_meta['samples']} samples at {ocr_meta['rate']:.2g} fps)")
     elif not ocr_backend and not ocr_problem and video_path and meta.get("has_video"):
         p("- **On-screen text:** off" + (" (no OCR engine installed; install tesseract to read captions and slides)"
                                          if ocr_choice == "auto" else ""))
-    lines = timeline.merge_lines(transcript_segments, [f["timestamp_seconds"] for f in frames])
     if transcript_segments:
         in_range = " in range" if focused else ""
         p(f"- **Transcript:** {len(lines)} lines{in_range} (via {transcript_source or 'captions'})")

@@ -41,6 +41,13 @@ MAX_LINE_CHARS = 160
 SAME_TEXT = 0.75  # SequenceMatcher ratio treated as the same on-screen line
 MISSED_SAMPLES = 2  # OCR flicker tolerance before a line counts as gone
 REOPEN_SECONDS = 2.0
+# Burned-in word-pop captions arrive as many short events; runs of them read as speech.
+CAPTION_WORDS = 5
+CAPTION_GAP = 1.5
+CAPTION_RUN_WORDS = 30
+SPOKEN_OVERLAP = 0.6
+# A short line that keeps re-appearing is a background graphic being re-read, not a caption.
+RECURRING_NOISE = 3
 VISION_SCRIPT = Path(__file__).with_name('ocr_vision.swift')
 
 
@@ -273,6 +280,69 @@ def absorb_reveals(events: list[dict], interval: float) -> list[dict]:
     return sorted(out, key=lambda e: e['start'])
 
 
+def drop_recurring(events: list[dict]) -> list[dict]:
+    """Drop short lines that appear (fuzzily) as RECURRING_NOISE or more separate events.
+
+    Captions rarely repeat a phrase, while stylized background text is re-read with
+    varying misreads every few samples; a steady watermark is one long event and stays.
+    """
+    keys = [norm(e['text']) for e in events]
+    kept = []
+    for event, key in zip(events, keys):
+        short = len(key.split()) <= CAPTION_WORDS
+        if short and sum(similar(key, other) for other in keys) >= RECURRING_NOISE:
+            continue
+        kept.append(event)
+    return kept
+
+
+def caption_runs(events: list[dict]) -> list[dict]:
+    """Merge consecutive short fragments into sentence-sized ``caption`` events.
+
+    Longer text (slides, UI) is kind ``text`` and does not interrupt a caption run.
+    """
+    out: list[dict] = []
+    run: list[dict] = []
+
+    def flush():
+        if len(run) >= 2:
+            out.append({'start': run[0]['start'], 'end': max(e['end'] for e in run),
+                        'text': ' '.join(e['text'] for e in run), 'kind': 'caption'})
+        else:
+            out.extend({**e, 'kind': 'text'} for e in run)
+        run.clear()
+
+    for event in sorted(events, key=lambda e: e['start']):
+        words = len(event['text'].split())
+        if words > CAPTION_WORDS:
+            out.append({**event, 'kind': 'text'})
+            continue
+        if run:
+            run_words = sum(len(e['text'].split()) for e in run)
+            ended = re.search(r'[.?!]$', run[-1]['text']) and run_words >= 6
+            if event['start'] - run[-1]['start'] > CAPTION_GAP or run_words + words > CAPTION_RUN_WORDS or ended:
+                flush()
+        run.append(event)
+    flush()
+    return sorted(out, key=lambda e: e['start'])
+
+
+def drop_spoken(events: list[dict], speech: list[dict], slack: float = 2.0) -> list[dict]:
+    """Drop captions that repeat the speech transcript; on-screen ``text`` is always kept."""
+    if not speech:
+        return events
+    kept = []
+    for event in events:
+        if event.get('kind') == 'caption':
+            heard = set(norm(' '.join(l['text'] for l in speech
+                                      if l['start'] <= event['end'] + slack and l['end'] >= event['start'] - slack)).split())
+            shown = norm(event['text']).split()
+            if shown and sum(w in heard for w in shown) / len(shown) >= SPOKEN_OVERLAP:
+                continue
+        kept.append(event)
+    return kept
+
+
 def on_screen_text(video_path: str, work: Path, backend: str, *, lang: str, fps: float | None,
                    start: float, end: float) -> tuple[list[dict], dict]:
     rate = sample_rate(end - start, fps)
@@ -283,5 +353,5 @@ def on_screen_text(video_path: str, work: Path, backend: str, *, lang: str, fps:
         texts = read_tesseract(samples, lang) if backend == 'tesseract' else read_vision(samples)
     finally:
         shutil.rmtree(directory, ignore_errors=True)  # Samples are inputs, not evidence.
-    events = track([(s['timestamp_seconds'], lines) for s, lines in zip(samples, texts)], 1 / rate)
+    events = caption_runs(drop_recurring(track([(s['timestamp_seconds'], lines) for s, lines in zip(samples, texts)], 1 / rate)))
     return events, {'backend': backend, 'samples': len(samples), 'rate': rate}

@@ -158,3 +158,39 @@ def test_watch_interleaves_text_rows_and_caches_them(monkeypatch, capsys, text_r
     monkeypatch.setenv('WATCH_OCR', 'none')
     assert watch.main() == 0
     assert '] TEXT: ' not in capsys.readouterr().out, 'OCR settings are part of the cache key'
+
+
+def ev(start, text, end=None):
+    return {'start': start, 'end': end if end is not None else start + 0.4, 'text': text}
+
+
+def test_word_pop_fragments_merge_into_caption_lines_and_slides_stay_text():
+    events = [ev(0, 'how to structure'), ev(0.6, 'your sales calls'), ev(0.6, 'STAGES OF A SALES CALL: CLARIFY, LABEL'),
+              ev(1.2, 'like the top 1%'), ev(5, 'label them'), ev(9, 'alone')]
+    out = ocr.caption_runs(events)
+    assert [(e['start'], e['kind'], e['text']) for e in out] == [
+        (0, 'caption', 'how to structure your sales calls like the top 1%'),
+        (0.6, 'text', 'STAGES OF A SALES CALL: CLARIFY, LABEL'),
+        (5, 'text', 'label them'), (9, 'text', 'alone')]
+
+
+def test_caption_runs_split_at_sentence_ends_and_size():
+    out = ocr.caption_runs([ev(0, 'never open a call'), ev(0.5, 'like this.'), ev(1, 'do this instead')])
+    assert [e['text'] for e in out] == ['never open a call like this.', 'do this instead']
+    long = ocr.caption_runs([ev(i * 0.5, 'one two three four five') for i in range(10)])
+    assert all(len(e['text'].split()) <= ocr.CAPTION_RUN_WORDS for e in long)
+
+
+def test_captions_repeating_speech_are_dropped_but_text_is_kept():
+    events = [{**ev(0, 'so open with their world', 2), 'kind': 'caption'},
+              {**ev(3, 'quick question for you', 5), 'kind': 'caption'},
+              {**ev(0, 'Book now at delicious.homes', 2), 'kind': 'text'}]
+    speech = [{'start': 0, 'end': 2.5, 'text': 'So open with their world.'}]
+    assert [e['text'] for e in ocr.drop_spoken(events, speech)] == ['quick question for you', 'Book now at delicious.homes']
+    assert ocr.drop_spoken(events, []) == events
+
+
+def test_recurring_short_misreads_are_background_noise():
+    events = [ev(0, 'Cae the Vaceten'), ev(1, 'so people'), ev(4, 'Cae the Vacetan'), ev(8, 'Cae tho Vaceten'),
+              ev(9, '@delicious.homes', 60)]
+    assert [e['text'] for e in ocr.drop_recurring(events)] == ['so people', '@delicious.homes']
