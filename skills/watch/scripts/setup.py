@@ -15,6 +15,14 @@ from pathlib import Path
 from config import (CONFIG_DIR, CONFIG_FILE, ConfigError, DETAILS, ENGINES, get_config,
                     load_api_key, load_gemini_key, read_env_file, resolve_engine, write_settings)
 from runtime import configure_stdio, diagnostic, run_text
+import ocr
+
+# Optional: on-screen text (burned-in captions, slides). Never blocks setup.
+OCR_HINTS = {
+    'Darwin': 'Apple Vision OCR needs the swift command (xcode-select --install); or brew install tesseract.',
+    'Linux': 'Install tesseract for on-screen text: sudo apt install tesseract-ocr (or your distribution\'s package).',
+    'Windows': 'Install tesseract for on-screen text: winget install --id UB-Mannheim.TesseractOCR, then add it to PATH.',
+}
 
 REQUIRED_BINARIES = ['ffmpeg', 'ffprobe', 'yt-dlp']
 WHISPERX_VERSION = '3.8.6'
@@ -166,6 +174,9 @@ def _status(detailed=False):
               'whisperx_ready': local_ready, 'whisperx_bin': cfg['whisperx_bin'],
               'whisperx_model': cfg['whisperx_model'], 'config_file': str(CONFIG_FILE),
               'watch_detail': cfg['detail'], 'platform': platform.system()}
+    ocr_backend, ocr_problem = ocr.resolve(cfg['ocr'])
+    result.update(ocr_backend=ocr_backend, configured_ocr=cfg['ocr'], ocr_problem=ocr_problem,
+                  ocr_hint=None if ocr_backend else OCR_HINTS.get(platform.system(), OCR_HINTS['Linux']))
     if detailed:
         tools = {}
         for name in REQUIRED_BINARIES:

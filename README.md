@@ -276,8 +276,11 @@ The local engine's report is one chronological timeline: `FRAME` markers interle
 [00:00] FRAME frame_0001.jpg (first-frame)
 [00:00] all right so here we are in front of the elephants
 [00:14] FRAME frame_0007.jpg (scene-change)
+[00:14] TEXT: THIS IS HOW YOU CLOSE
 [00:15] the cool thing about these guys is that they have really long trunks
 ```
+
+`TEXT:` lines are on-screen text — burned-in captions, slides, UI, code — read by local OCR about once per second and reported once, when they appear. They matter most on Reels, TikTok, and Shorts, where burned-in captions are often the only transcript. OCR is optional and never blocks a run: install [Tesseract](https://tesseract-ocr.github.io/tessdoc/Installation.html) (`brew install tesseract`, `sudo apt install tesseract-ocr`, or `winget install UB-Mannheim.TesseractOCR`), or on macOS let watch use Apple's built-in Vision OCR (needs `xcode-select --install`). Choose with `--ocr auto|tesseract|vision|none` or `WATCH_OCR`; `WATCH_OCR_LANG=eng+spa` adds Tesseract languages.
 
 Each run writes `timeline.md` and a machine-readable `timeline.json`. Complete runs are cached in `~/.cache/watch/timelines` (the 50 most recently used), keyed by the source and every option that changes the evidence. Asking again with the same options reuses the saved timeline and frames without downloading or transcribing. Use `--refresh` to rebuild, `--no-cache` for a one-off run, or set `WATCH_CACHE_DIR` to move the cache (`off` disables it). Only text and the selected frames are cached, never media or audio.
 

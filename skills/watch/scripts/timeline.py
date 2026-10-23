@@ -86,7 +86,7 @@ def short_description(text) -> str | None:
     return text or None
 
 
-def build(*, frames: list[dict], lines: list[dict], chapters: list[dict] | None = None,
+def build(*, frames: list[dict], lines: list[dict], text: list[dict] = (), chapters: list[dict] | None = None,
           description: str | None = None, header: dict | None = None,
           speech_source: str | None = None) -> dict:
     return {
@@ -98,13 +98,21 @@ def build(*, frames: list[dict], lines: list[dict], chapters: list[dict] | None 
         'frames': [{'file': Path(f['path']).name, 't': round(f['timestamp_seconds'], 3),
                     'reason': f.get('reason', 'selected')} for f in frames],
         'lines': [{'start': round(l['start'], 3), 'end': round(l['end'], 3), 'text': l['text']} for l in lines],
+        'text': [{'start': round(e['start'], 3), 'end': round(e['end'], 3), 'text': e['text']} for e in text],
     }
 
 
 def events(data: dict) -> list[str]:
-    """Chronological text rows; a frame sorts before speech starting the same instant."""
+    """Chronological rows: FRAME, then on-screen TEXT, then speech at the same instant.
+
+    Text that appears in the same OCR sample (a slide's lines) shares one row.
+    """
     rows = [(f['t'], 0, f"[{clock(f['t'])}] FRAME {f['file']} ({f['reason']})") for f in data['frames']]
-    rows += [(l['start'], 1, f"[{clock(l['start'])}] {l['text']}") for l in data['lines']]
+    shown: dict[float, list[str]] = {}
+    for item in data.get('text', []):
+        shown.setdefault(item['start'], []).append(item['text'])
+    rows += [(t, 1, f"[{clock(t)}] TEXT: {' / '.join(texts)}") for t, texts in shown.items()]
+    rows += [(l['start'], 2, f"[{clock(l['start'])}] {l['text']}") for l in data['lines']]
     return [row for _, _, row in sorted(rows, key=lambda r: (r[0], r[1]))]
 
 
@@ -122,8 +130,14 @@ def render_sections(data: dict, frames_dir: Path | None) -> str:
         out.append(f'Frames live at: `{frames_dir}`')
         out.append('')
         out.append('**Read every `FRAME` file below from that directory with the Read tool.** '
-                   '`[MM:SS]` is the absolute source time; a frame shows what is on screen from its '
-                   'time until the next FRAME line. Other lines are speech.')
+                   'A frame shows what is on screen from its time until the next FRAME line.')
+        out.append('')
+    if data.get('text'):
+        out.append('`TEXT:` lines are on-screen text read by OCR when it appears (burned-in captions, slides, '
+                   'UI; `/` separates lines shown together). OCR can misread stylized text.')
+        out.append('')
+    if data['frames'] or data.get('text'):
+        out.append('`[MM:SS]` is absolute source time. Lines without a `FRAME`/`TEXT:` tag are speech.')
         out.append('')
     if data['speech_source']:
         out.append(f"_Speech: {data['speech_source']}._")

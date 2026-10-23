@@ -24,12 +24,14 @@ from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, ext
 from transcribe import filter_range, parse_vtt  # noqa: E402
 import cache  # noqa: E402
 import timeline  # noqa: E402
+import ocr  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
 from runtime import configure_stdio  # noqa: E402
 
 
 LOCAL_ONLY_FLAGS = (("--detail", "detail"), ("--fps", "fps"), ("--max-frames", "max_frames"),
-                    ("--timestamps", "timestamps"), ("--whisper", "whisper"), ("--sub-lang", "sub_lang"))
+                    ("--timestamps", "timestamps"), ("--whisper", "whisper"), ("--sub-lang", "sub_lang"),
+                    ("--ocr", "ocr"))
 
 
 def run_gemini(args, config, key, start_sec, end_sec, auth) -> int:
@@ -146,6 +148,9 @@ def main() -> int:
                          "local: frames + transcript on this machine. Default auto: gemini when a key exists.")
     ap.add_argument("--question", default=None,
                     help="The user's question. Sent to Gemini on a gemini run; unused by the local engine.")
+    ap.add_argument("--ocr", choices=list(ocr.CHOICES), default=None,
+                    help="Read on-screen text (burned-in captions, slides, UI): auto (tesseract, else Apple "
+                         "Vision on macOS, else off), tesseract, vision, or none.")
     ap.add_argument("--no-cache", action="store_true",
                     help="Neither reuse nor save a cached timeline for this run.")
     ap.add_argument("--refresh", action="store_true",
@@ -172,6 +177,8 @@ def main() -> int:
         return run_gemini(args, config, gemini_key, start_sec, end_sec, auth)
 
     sub_lang = args.sub_lang or config["sub_lang"]
+    ocr_choice = args.ocr or config["ocr"]
+    ocr_backend, ocr_problem = ocr.resolve(ocr_choice)
     cache_root = None if args.no_cache else cache.resolve_root(config["cache_dir"])
     # Every option that changes the evidence is part of the key; --question is not (unused locally).
     cache_key = cache_root and cache.run_key(args.source, {
@@ -179,6 +186,7 @@ def main() -> int:
         "fps": args.fps, "start": start_sec, "end": end_sec, "timestamps": cue_timestamps,
         "dedup": not args.no_dedup, "sub_lang": sub_lang, "backend": backend_choice,
         "whisperx": [config["whisperx_model"], config["whisperx_language"]] if backend_choice == "whisperx" else None,
+        "ocr": [ocr_backend, config["ocr_lang"], config["ocr_fps"]] if ocr_backend else None,
     })
     hit = cache.lookup(cache_root, cache_key) if cache_key and not args.refresh else None
     if hit:
@@ -223,7 +231,9 @@ def main() -> int:
             except (OSError, ValueError) as exc:
                 errors.append(f"Caption parsing failed: {exc}")
 
-    audio_only = detail == "transcript" and not cue_timestamps
+    text_only = detail == "transcript" and not cue_timestamps
+    # Without captions, burned-in text may be the only words on screen: fetch pixels for OCR.
+    audio_only = text_only and not (ocr_backend and not track_available)
     # Captions are assessed before range filtering: a quiet interval is not a missing track.
     need_media = not (audio_only and (track_available or backend_choice == "none") and url_source)
     if need_media:
@@ -291,6 +301,19 @@ def main() -> int:
         visual_error = "No video stream; visual evidence is unavailable."
     if cue_frames:
         frames = merge_frames(frames, cue_frames)
+
+    text_events, ocr_meta = [], None
+    readable = bool(video_path and meta.get("has_video") and effective_end > effective_start)
+    if ocr_problem and readable:
+        errors.append(f"On-screen text unavailable: {ocr_problem}")
+    elif ocr_backend and readable:
+        print(f"[watch] reading on-screen text ({ocr_backend})…", file=sys.stderr)
+        try:
+            text_events, ocr_meta = ocr.on_screen_text(
+                video_path, work, ocr_backend, lang=config["ocr_lang"], fps=config["ocr_fps"],
+                start=effective_start, end=effective_end)
+        except SystemExit as exc:
+            errors.append(f"On-screen text unavailable: {exc}")
 
     transcript_state = "missing"
     if not track_available and backend_choice != "none" and video_path and meta.get("has_audio"):
@@ -361,6 +384,13 @@ def main() -> int:
         p(f"- **Cue frames:** {len(cue_frames)} at transcript-flagged timestamps (transcript-cue{drop_note})")
     if frames:
         p(f"- **Frame size:** max {args.resolution}px wide, max 1998px tall")
+    if ocr_meta:
+        p(f"- **On-screen text:** {len(text_events) or 'none detected'}"
+          f"{' lines' if text_events else ''} (OCR via {ocr_meta['backend']}, {ocr_meta['samples']} samples "
+          f"at {ocr_meta['rate']:.2g} fps)")
+    elif not ocr_backend and not ocr_problem and video_path and meta.get("has_video"):
+        p("- **On-screen text:** off" + (" (no OCR engine installed; install tesseract to read captions and slides)"
+                                         if ocr_choice == "auto" else ""))
     lines = timeline.merge_lines(transcript_segments, [f["timestamp_seconds"] for f in frames])
     if transcript_segments:
         in_range = " in range" if focused else ""
@@ -390,7 +420,7 @@ def main() -> int:
         speech = (f"{label}, filtered to {format_time(effective_start)} → {format_time(effective_end)}"
                   if focused else label)
     data = timeline.build(
-        frames=frames, lines=lines, speech_source=speech,
+        frames=frames, lines=lines, text=text_events, speech_source=speech,
         chapters=timeline.chapters_from(info, meta), description=timeline.short_description(info.get("description")),
         header={"source": args.source, "title": info.get("title"), "uploader": info.get("uploader"),
                 "duration": round(full_duration, 3), "detail": detail, "transcript": transcript_state,

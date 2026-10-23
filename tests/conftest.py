@@ -26,6 +26,7 @@ def isolated_user(monkeypatch, tmp_path):
         }:
             monkeypatch.delenv(key)
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("WATCH_OCR", "none")  # OCR tests opt in; results must not depend on installed engines.
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
     monkeypatch.chdir(cwd)
