@@ -194,3 +194,12 @@ def test_recurring_short_misreads_are_background_noise():
     events = [ev(0, 'Cae the Vaceten'), ev(1, 'so people'), ev(4, 'Cae the Vacetan'), ev(8, 'Cae tho Vaceten'),
               ev(9, '@delicious.homes', 60)]
     assert [e['text'] for e in ocr.drop_recurring(events)] == ['so people', '@delicious.homes']
+
+
+def test_misread_captions_and_short_fragments_that_were_spoken_are_dropped():
+    speech = [{'start': 26, 'end': 35, 'text': "Hey John, quick question. I was looking at your operation and I'm calling about your competitor."},
+              {'start': 8, 'end': 11, 'text': 'Salesman. Stop it.'}]
+    events = [{**ev(26, 'Hey Joh quick vce quick question a looking at a your operation and im calling abou your com pet ito', 30), 'kind': 'caption'},
+              {**ev(10, 'Stop it a', 11), 'kind': 'text'},
+              {**ev(27, 'COMPETITOR INTEL CHECKLIST: locations, pricing, hiring', 30), 'kind': 'text'}]
+    assert [e['text'] for e in ocr.drop_spoken(events, speech)] == ['COMPETITOR INTEL CHECKLIST: locations, pricing, hiring']

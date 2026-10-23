@@ -327,17 +327,26 @@ def caption_runs(events: list[dict]) -> list[dict]:
     return sorted(out, key=lambda e: e['start'])
 
 
+def _heard(word: str, heard: set[str]) -> bool:
+    """OCR truncates and misreads words ("abou", "Joh"), so prefixes and near-misses count."""
+    return word in heard or (len(word) >= 3 and any(h.startswith(word) or similar(word, h) for h in heard))
+
+
 def drop_spoken(events: list[dict], speech: list[dict], slack: float = 2.0) -> list[dict]:
-    """Drop captions that repeat the speech transcript; on-screen ``text`` is always kept."""
+    """Drop on-screen captions that repeat the speech transcript.
+
+    Merged captions and lone short fragments are both checked; longer on-screen text
+    (slides, UI) is always kept even when it is read aloud.
+    """
     if not speech:
         return events
     kept = []
     for event in events:
-        if event.get('kind') == 'caption':
+        if event.get('kind') == 'caption' or len(event['text'].split()) <= CAPTION_WORDS:
             heard = set(norm(' '.join(l['text'] for l in speech
                                       if l['start'] <= event['end'] + slack and l['end'] >= event['start'] - slack)).split())
             shown = norm(event['text']).split()
-            if shown and sum(w in heard for w in shown) / len(shown) >= SPOKEN_OVERLAP:
+            if shown and sum(_heard(w, heard) for w in shown) / len(shown) >= SPOKEN_OVERLAP:
                 continue
         kept.append(event)
     return kept

@@ -203,14 +203,27 @@ The first-run wizard asks for your detail preference and fallback backend. Start
 
 | Backend | Requirements and behavior |
 |---|---|
-| `whisperx` | Recommended for transcription on a verified local machine. No API key; the skill manages a separate Python 3.12 environment and downloads its models. |
-| `groq` | Cloud `whisper-large-v3`; needs `GROQ_API_KEY` from [Groq](https://console.groq.com/keys). |
+| `whispercpp` | Recommended. Local [whisper.cpp](https://github.com/ggml-org/whisper.cpp): one native binary plus a model file, no API key, no Python packages; audio stays on the machine. |
+| `groq` | Cloud `whisper-large-v3-turbo` (cheapest cloud option; `WATCH_GROQ_MODEL` selects another); needs `GROQ_API_KEY` from [Groq](https://console.groq.com/keys). |
+| `whisperx` | Heavier local option; the skill manages a separate Python 3.12 environment and downloads its models. |
 | `openai` | Cloud `whisper-1`; needs `OPENAI_API_KEY` from [OpenAI](https://platform.openai.com/api-keys). |
 | `none` | Captions only. Local files and captionless URLs can still provide visual evidence. |
 
-Existing 0.2.0 users retain `auto`: Groq key first, then OpenAI. No automatic migration to local inference. Explicit `--whisper groq|openai|whisperx` overrides this run's fallback, while `--no-whisper` disables all fallbacks and still permits native captions. Those two flags conflict.
+Existing 0.2.0 users retain `auto`: Groq key first, then OpenAI. No automatic migration to local inference. Explicit `--whisper groq|openai|whispercpp|whisperx` overrides this run's fallback, while `--no-whisper` disables all fallbacks and still permits native captions. Those two flags conflict.
 
 Settings live in `~/.config/watch/.env`. Enter keys privately there or in the process environment; do not commit them or paste them into public issues. Cloud-key lookup is provider preference first, then environment → user file → cwd `.env` for each provider. Explicit providers never borrow another provider's key. Config files support UTF-8, UTF-8 BOM, and BOM-marked UTF-16; quotes, comments, and literal Windows paths work without shell expansion. Last assignment wins.
+
+### Local whisper.cpp
+
+Have the agent run the bundled `setup.py --backend whispercpp --detail balanced`. It needs the `whisper-cli` binary:
+
+| Platform | Binary |
+|---|---|
+| macOS | `brew install whisper-cpp` (setup runs this for you when Homebrew is present; Metal-accelerated on Apple Silicon) |
+| Linux | Build from [source](https://github.com/ggml-org/whisper.cpp): `cmake -B build && cmake --build build -j --target whisper-cli`, then put `build/bin/whisper-cli` on PATH or set `WATCH_WHISPERCPP_BIN` |
+| Windows | Download `whisper-bin-x64.zip` from the [releases](https://github.com/ggml-org/whisper.cpp/releases) and set `WATCH_WHISPERCPP_BIN` to `whisper-cli.exe` |
+
+Setup then downloads the model once from Hugging Face into `~/.cache/watch/whisper.cpp`, transcribes two seconds of silence to confirm it works, and saves the backend. `WATCH_WHISPERCPP_MODEL` picks the model: `base` (148 MB, fastest), `small` (466 MB, default), `small.en`, or `large-v3-turbo-q5_0` (547 MB, most accurate; best on Apple Silicon). Rerun setup after changing it. `WATCH_WHISPERCPP_LANGUAGE=sw` (for example) fixes the language when auto-detection is wrong. On a 4-core Linux CPU, a 54-second clip took about 10 s with `base` and 30 s with `small`.
 
 ### Managed WhisperX
 

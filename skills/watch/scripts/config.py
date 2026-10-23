@@ -12,7 +12,7 @@ CONFIG_DIR = Path.home() / '.config' / 'watch'
 CONFIG_FILE = CONFIG_DIR / '.env'
 DEFAULT_DETAIL = 'balanced'
 DETAILS = {'transcript', 'efficient', 'balanced', 'token-burner'}
-BACKENDS = {'auto', 'groq', 'openai', 'whisperx', 'none'}
+BACKENDS = {'auto', 'groq', 'openai', 'whispercpp', 'whisperx', 'none'}
 ENGINES = {'auto', 'gemini', 'local'}
 OCR_CHOICES = {'auto', 'tesseract', 'vision', 'none'}
 DEFAULT_GEMINI_MODEL = 'gemini-3.7-flash'
@@ -137,7 +137,7 @@ def get_config(*, backend_override: str | None = None) -> dict:
     detail = setting('WATCH_DETAIL', DEFAULT_DETAIL)
     backend = backend_override if backend_override is not None else setting('WATCH_WHISPER_BACKEND', 'auto')
     if backend not in BACKENDS:
-        raise ConfigError('WATCH_WHISPER_BACKEND must be auto, groq, openai, whisperx, or none.')
+        raise ConfigError('WATCH_WHISPER_BACKEND must be auto, groq, openai, whispercpp, whisperx, or none.')
     ocr = setting('WATCH_OCR', 'auto') or 'auto'
     if ocr not in OCR_CHOICES:
         raise ConfigError('WATCH_OCR must be auto, tesseract, vision, or none.')
@@ -158,6 +158,12 @@ def get_config(*, backend_override: str | None = None) -> dict:
         'ocr': ocr,
         'ocr_lang': setting('WATCH_OCR_LANG', 'eng') or 'eng',
         'ocr_fps': None if setting('WATCH_OCR_FPS', 'auto') in ('', 'auto') else positive_number(setting('WATCH_OCR_FPS'), 'WATCH_OCR_FPS'),
+        'groq_model': setting('WATCH_GROQ_MODEL', 'whisper-large-v3-turbo') or 'whisper-large-v3-turbo',
+        'whispercpp_bin': setting('WATCH_WHISPERCPP_BIN'),
+        'whispercpp_model': setting('WATCH_WHISPERCPP_MODEL', 'small') or 'small',
+        'whispercpp_language': setting('WATCH_WHISPERCPP_LANGUAGE', 'auto') or 'auto',
+        'whispercpp_threads': setting('WATCH_WHISPERCPP_THREADS'),
+        'whispercpp_timeout': setting('WATCH_WHISPERCPP_TIMEOUT'),
         'whisperx_bin': setting('WATCH_WHISPERX_BIN'),
         'whisperx_model': setting('WATCH_WHISPERX_MODEL', 'small'),
         'whisperx_device': setting('WATCH_WHISPERX_DEVICE', 'cpu'),

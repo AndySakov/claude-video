@@ -1,6 +1,6 @@
 ---
 name: watch
-description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or local WhisperX / cloud Whisper fallback), and hands the result to the agent so it can answer questions about what's in the video. With a Gemini API key, Google's agentic video model watches the full video instead.
+description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or local whisper.cpp / WhisperX, or cloud Whisper fallback), reads on-screen text with OCR, and hands the result to the agent so it can answer questions about what's in the video. With a Gemini API key, Google's agentic video model watches the full video instead.
 license: MIT
 allowed-tools: Bash, Read, AskUserQuestion
 metadata:
@@ -64,19 +64,22 @@ If the detail question is skipped, retain `balanced`.
 
 Then ask: **For videos without captions, how should watch transcribe?** Present:
 
-1. `whisperx` (recommended): local transcription, no API key; audio stays on the machine. One-time download of about 1.5 GB. Requires 3 GB free disk, 8 GB RAM, and a compatible 64-bit CPU. Apple Silicon macOS is verified; Linux/Windows recipes and Intel macOS are untested.
-2. `groq`: fast cloud transcription, needs a Groq key.
-3. `openai`: cloud transcription, needs an OpenAI key.
-4. `none`: captions only; no speech fallback.
+1. `whispercpp` (recommended): local transcription, no API key, no Python packages; audio stays on the machine. One native binary (`brew install whisper-cpp` on macOS, Metal-accelerated on Apple Silicon; a source build on Linux; a release zip on Windows) plus a one-time 466 MB model download. Verified on Linux CPU (a 54-second clip transcribes in about 10 s with `base`, 30 s with `small`).
+2. `groq`: fast, cheap cloud transcription (`whisper-large-v3-turbo`), needs a Groq key; the free tier covers light use.
+3. `whisperx`: heavier local transcription (about 1.5 GB of Python packages and models; 3 GB free disk, 8 GB RAM). Apple Silicon macOS is verified; Linux/Windows recipes and Intel macOS are untested.
+4. `openai`: cloud transcription, needs an OpenAI key.
+5. `none`: captions only; no speech fallback.
 
 Use an existing explicit backend choice without asking again. Do not treat silence as permission to install local models or upload audio; the no-key/no-install path remains available.
 
 Complete the selected setup using the user's detail value:
 
 ```bash
-python3 "${SKILL_DIR}/scripts/setup.py" --backend whisperx --detail balanced
-# Or: --backend groq / openai / none
+python3 "${SKILL_DIR}/scripts/setup.py" --backend whispercpp --detail balanced
+# Or: --backend groq / whisperx / openai / none
 ```
+
+For whisper.cpp, setup finds `whisper-cli` (or `WATCH_WHISPERCPP_BIN`), runs `brew install whisper-cpp` on macOS when it is missing, and otherwise prints the platform's install step and exits 2 — relay that step; never compile or install system packages without the user's consent. It then downloads the model from Hugging Face into `~/.cache/watch/whisper.cpp`, warms it up, and only then saves the backend.
 
 For WhisperX, relay progress while the installer provisions uv, Python 3.12, pinned dependencies, and both model caches. `setup.py --install-whisperx` reruns this managed installer if needed. It writes the backend, executable, model, and completion marker only after warm-up succeeds. A failed local installation never selects a cloud backend automatically.
 
@@ -84,7 +87,7 @@ For cloud, get the matching key the same way as the Gemini key (pasted in chat, 
 
 **On-screen text (optional, never blocks).** `--json` also reports `ocr_backend` (`tesseract`, `vision`, or null), `configured_ocr`, and `ocr_hint`. When `ocr_backend` is null on a first run, mention once that installing the hint's package lets watch read burned-in captions, slides, and code; do not install it without the user's consent. `WATCH_OCR=auto|tesseract|vision|none` (default `auto`: Tesseract, else Apple Vision on macOS with `swift`, else off), `WATCH_OCR_LANG` (Tesseract languages, e.g. `eng+spa`; default `eng`), `WATCH_OCR_FPS` (default `auto`: 3 fps up to 3 minutes, 2 fps up to 10, then 1).
 
-`setup.py --check` is a fast, silent base preflight: exit 0 when binaries exist (or the Gemini engine is active), 2 for missing dependencies/config errors. It never starts Torch or queries network services. `--json` adds `engine` (resolved: `gemini` or `local`), `configured_engine`, `gemini_key_present` (boolean only), `gemini_model`, `binaries_required`, executable paths/versions, offline yt-dlp capability diagnostics, and `whisperx_ready`, `whisperx_bin`, `whisperx_model`, and `backend_ready`. Local readiness in detailed mode checks the sentinel and executable help. Optional fallback failure does not block base watch.
+`setup.py --check` is a fast, silent base preflight: exit 0 when binaries exist (or the Gemini engine is active), 2 for missing dependencies/config errors. It never starts Torch or queries network services. `--json` adds `engine` (resolved: `gemini` or `local`), `configured_engine`, `gemini_key_present` (boolean only), `gemini_model`, `binaries_required`, executable paths/versions, offline yt-dlp capability diagnostics, and `whispercpp_ready`, `whispercpp_bin`, `whispercpp_model`, `whisperx_ready`, `whisperx_bin`, `whisperx_model`, and `backend_ready`. Local readiness in detailed mode checks the sentinel and executable help. Optional fallback failure does not block base watch.
 
 ## Watch and answer
 
@@ -117,7 +120,7 @@ python3 "${SKILL_DIR}/scripts/watch.py" "<URL-or-local-path>" --question "<the u
 | `--fps F` | Positive uniform rate override, at most 2 fps and reduced to fit the remaining cap |
 | `--no-dedup` | Preserve near-identical selected frames |
 | `--ocr auto|tesseract|vision|none` | On-screen text engine for this run |
-| `--whisper groq|openai|whisperx` | Select this run's fallback; captions still come first |
+| `--whisper groq|openai|whispercpp|whisperx` | Select this run's fallback; captions still come first |
 | `--no-whisper` | Disable every speech fallback, including local; conflicts with `--whisper` |
 | `--sub-lang CODE` | Select one exact caption language; default `auto` prefers original-language evidence |
 | `--cookies FILE` | Explicit cookie jar; yt-dlp may update it |
@@ -152,7 +155,9 @@ For a presenter saying “look here,” “notice this,” or similar:
 
 Full-track caption availability is checked before focus filtering. A silent focus interval does not trigger another transcription request. Reports distinguish no speech, disabled fallback, failed modalities, and missing cloud-chunk intervals.
 
-`WATCH_WHISPER_BACKEND=auto|groq|openai|whisperx|none` chooses the saved fallback. In `auto`, each provider looks up its key in environment → user config → cwd `.env`, preferring Groq before checking OpenAI. Explicit provider choices never borrow another provider's key.
+`WATCH_WHISPER_BACKEND=auto|groq|openai|whispercpp|whisperx|none` chooses the saved fallback. In `auto`, each provider looks up its key in environment → user config → cwd `.env`, preferring Groq before checking OpenAI. Explicit provider choices never borrow another provider's key.
+
+whisper.cpp defaults: `WATCH_WHISPERCPP_MODEL=small` (any published name such as `base`, `small.en`, `large-v3-turbo-q5_0`, or an absolute path to a ggml `.bin`), `WATCH_WHISPERCPP_LANGUAGE=auto` (the detected language is reported; set a two-letter code such as `sw` when detection is wrong), `WATCH_WHISPERCPP_THREADS` (default: CPU count, at most 8), optional `WATCH_WHISPERCPP_TIMEOUT` seconds. Rerun `setup.py --backend whispercpp` after changing the model so it is downloaded. Groq uses `WATCH_GROQ_MODEL` (default `whisper-large-v3-turbo`; `whisper-large-v3` for the slower, pricier full model).
 
 WhisperX defaults: `WATCH_WHISPERX_MODEL=small`, `WATCH_WHISPERX_DEVICE=cpu`, `WATCH_WHISPERX_COMPUTE_TYPE=int8`, `WATCH_WHISPERX_BATCH_SIZE=8`. No alignment or diarization is run. `WATCH_WHISPERX_LANGUAGE=es` (for example) gives a spoken-language hint; never infer it from `--sub-lang`, which may request a translation. Without a hint, auto-detection is used but reported as unverified because WhisperX 3.8.6 mislabels its JSON language when alignment is disabled.
 
@@ -173,9 +178,10 @@ When a run is cached its frames live in the cache entry and an empty work dir is
 - yt-dlp contacts the source service/CDNs for metadata, one selected caption track, and media; access may require explicitly configured authentication. A cookie file is a read/write jar.
 - With the Gemini engine, YouTube URLs are sent to Google and local or downloaded videos are uploaded to Google's Files API (generativelanguage.googleapis.com), then deleted after the answer; an upload that cannot be deleted expires within 48 hours. The key is sent only as a request header. The local engine never contacts Google.
 - FFmpeg/ffprobe run locally for probing, frames, and mono audio extraction. OCR (Tesseract or Apple Vision) runs locally; OCR samples are deleted after reading.
+- With `whispercpp` selected, audio never leaves the machine; setup contacts Hugging Face once for the model (and Homebrew on macOS for the binary). Inference is offline.
 - With `whisperx` selected, audio never leaves the machine. First setup downloads packages and models from PyPI, Hugging Face, and GitHub, with uv/Python installers as needed. Pyannote telemetry is disabled. Warm caches allow offline inference; model libraries may still attempt cache/update network checks.
 - With `groq` or `openai` selected, only extracted audio is uploaded to that provider's transcription endpoint; keys are never shared between providers or logged by watch.
 - Runtime artifacts live in this run's working directory. Complete local-engine runs also persist their frames and transcript text (not media or audio) in `~/.cache/watch/timelines` until pruned; use `--no-cache` or `WATCH_CACHE_DIR=off` for videos that must not be kept. User settings/keys live in `~/.config/watch/.env`; cwd `.env` is a cloud-key fallback. POSIX writes use mode 0600; Windows ACLs are not audited. Use a Linux-home config in WSL, since Windows-mounted homes have different permission semantics.
 - The managed environment lives at `~/.cache/watch/whisperx-venv`, outside the plugin. Model caches normally live at `~/.cache/huggingface` and `~/.cache/torch/hub`. uv also caches packages and managed Python. Reinstalling the skill does not remove these.
 
-Bundled scripts: `watch.py`, `download.py`, `frames.py`, `transcribe.py`, `timeline.py`, `cache.py`, `ocr.py` (+ `ocr_vision.swift`), `whisper.py`, `local_whisperx.py`, `gemini.py`, `config.py`, `runtime.py`, and `setup.py` under `scripts/`. The base runtime uses only Python's standard library; optional WhisperX dependencies remain in its separate process/environment.
+Bundled scripts: `watch.py`, `download.py`, `frames.py`, `transcribe.py`, `timeline.py`, `cache.py`, `ocr.py` (+ `ocr_vision.swift`), `whisper.py`, `local_whispercpp.py`, `local_whisperx.py`, `gemini.py`, `config.py`, `runtime.py`, and `setup.py` under `scripts/`. The base runtime uses only Python's standard library; optional WhisperX dependencies remain in its separate process/environment.

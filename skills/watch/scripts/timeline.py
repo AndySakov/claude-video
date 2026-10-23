@@ -11,7 +11,7 @@ import json
 import re
 from pathlib import Path
 
-VERSION = 2
+VERSION = 3
 # Merged-line bounds: long enough to carry a sentence, short enough to cite precisely.
 MAX_LINE_WORDS = 40
 MAX_LINE_SECONDS = 20.0
