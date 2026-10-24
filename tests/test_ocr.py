@@ -99,31 +99,22 @@ def test_auto_without_engine_says_how_to_enable(monkeypatch, capsys, static_clip
     assert 'install tesseract' in capsys.readouterr().out
 
 
-def _font():
-    for candidate in ('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
-                      '/System/Library/Fonts/Supplemental/Arial Bold.ttf', '/Library/Fonts/Arial Bold.ttf'):
-        if Path(candidate).is_file():
-            return candidate
-    return None
+FIXTURES = Path(__file__).resolve().parent / 'fixtures' / 'ocr'
 
 
 @pytest.fixture(scope='session')
 def text_reel(tmp_path_factory):
-    """Pop-in captions over moving video, then a slide: the shapes OCR must handle."""
-    font = _font()
-    if not font:
-        pytest.skip('no known font for drawtext')
+    """Pop-in caption reveal, the full caption, then a slide: the shapes OCR must handle.
+
+    Built from pre-rendered frames so it needs no drawtext filter or fonts; Homebrew's
+    FFmpeg lacks drawtext, which used to skip the Apple Vision test on macOS.
+    """
     path = tmp_path_factory.mktemp('ocr') / 'reel.mp4'
-    def cap(text, a, b):
-        return (f"drawtext=fontfile='{font}':text='{text}':fontsize=80:fontcolor=white:borderw=6:bordercolor=black:"
-                f"x=(w-tw)/2:y=h*0.65:enable='between(t,{a},{b})'")
-    vf = ','.join([cap('THIS IS', 0, 1.99), cap('THIS IS HOW YOU CLOSE', 2, 3.99),
-                   "drawbox=x=0:y=0:w=iw:h=ih:color=white:t=fill:enable='gte(t,4)'",
-                   f"drawtext=fontfile='{font}':text='Q3 Revenue':fontsize=100:fontcolor=black:x=100:y=300:enable='gte(t,4)'"])
-    result = subprocess.run(['ffmpeg', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=s=1080x1920:r=10',
-                             '-t', '7', '-vf', vf, '-pix_fmt', 'yuv420p', str(path)], capture_output=True, text=True)
-    if result.returncode != 0:
-        pytest.skip(f'ffmpeg drawtext unavailable: {result.stderr[-200:]}')
+    inputs = []
+    for name, seconds in (('caption-reveal.jpg', 2), ('caption-full.jpg', 2), ('slide.jpg', 3)):
+        inputs += ['-loop', '1', '-framerate', '10', '-t', str(seconds), '-i', str(FIXTURES / name)]
+    subprocess.run(['ffmpeg', '-loglevel', 'error', '-y', *inputs, '-filter_complex',
+                    '[0:v][1:v][2:v]concat=n=3:v=1:a=0,format=yuv420p[v]', '-map', '[v]', str(path)], check=True)
     return path
 
 
