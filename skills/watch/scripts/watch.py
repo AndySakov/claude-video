@@ -11,6 +11,7 @@ import math
 import shutil
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -276,6 +277,13 @@ def main() -> int:
     work = Path(tempfile.mkdtemp(prefix="watch-", dir=parent))
     print(f"[watch] working dir: {work}", file=sys.stderr)
     url_source = is_url(args.source)
+    run_started = mark = time.monotonic()
+    stage_times = {}
+    def stage(name):  # Wall-clock seconds since the previous stage, reported on stderr at the end.
+        nonlocal mark
+        now = time.monotonic()
+        stage_times[name] = stage_times.get(name, 0.0) + now - mark
+        mark = now
     dl = {"subtitle_path": None, "info": {}, "downloaded": False}
     errors = []
     all_segments = []
@@ -298,6 +306,7 @@ def main() -> int:
                                      f"{track.get('kind', 'unknown')}, {track.get('provenance', 'unknown')})")
             except (OSError, ValueError) as exc:
                 errors.append(f"Caption parsing failed: {exc}")
+        stage("metadata")
 
     text_only = detail == "transcript" and not cue_timestamps
     # Without captions, burned-in text may be the only words on screen: fetch pixels for OCR.
@@ -314,6 +323,7 @@ def main() -> int:
         except SystemExit as exc:
             visual_error = f"Media unavailable: {exc}"
             errors.append(visual_error)
+        stage("media")
 
     try:
         duration = float((dl.get("info") or {}).get("duration") or 0)
@@ -369,6 +379,7 @@ def main() -> int:
         visual_error = "No video stream; visual evidence is unavailable."
     if cue_frames:
         frames = merge_frames(frames, cue_frames)
+    stage("frames")
 
     described = 0
     if describe_problem:
@@ -383,6 +394,7 @@ def main() -> int:
             described = len(descriptions)
         except SystemExit as exc:
             errors.append(f"Frame descriptions unavailable: {exc}")
+        stage("descriptions")
 
     text_events, ocr_meta = [], None
     readable = bool(video_path and meta.get("has_video") and effective_end > effective_start)
@@ -396,6 +408,7 @@ def main() -> int:
                 start=effective_start, end=effective_end)
         except SystemExit as exc:
             errors.append(f"On-screen text unavailable: {exc}")
+        stage("on-screen text")
 
     transcript_state = "missing"
     if not track_available and backend_choice != "none" and video_path and meta.get("has_audio"):
@@ -422,6 +435,7 @@ def main() -> int:
             except SystemExit as exc:
                 transcript_state = "failed"
                 errors.append(f"Transcription failed: {exc}")
+            stage("speech")
         else:
             transcript_state = f"unavailable: no matching API key for {backend_choice}"
     elif not track_available and backend_choice == "none":
@@ -434,6 +448,8 @@ def main() -> int:
         transcript_state = "available" if transcript_segments else ("no speech in selected range" if focused and all_segments else "no speech")
     for error in errors:
         print(f"[watch] {error}", file=sys.stderr)
+    print("[watch] time: " + " · ".join([f"{name} {seconds:.0f} s" for name, seconds in stage_times.items() if seconds >= 0.5]
+                                        + [f"total {time.monotonic() - run_started:.0f} s"]), file=sys.stderr)
 
     info = dl.get("info") or {}
     head = []

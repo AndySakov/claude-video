@@ -101,9 +101,13 @@ def test_watch_puts_descriptions_on_frame_lines_and_caches_them(server, monkeypa
     monkeypatch.setenv('WATCH_DESCRIBE_URL', server['url'])
     monkeypatch.setattr(sys, 'argv', ['watch', str(cut_clip), '--no-whisper'])
     assert watch.main() == 0
-    out = capsys.readouterr().out
+    captured = capsys.readouterr()
+    out = captured.out
     frames = [line for line in out.splitlines() if '] FRAME ' in line]
     assert frames and all(line.endswith('): A man at a desk talks into a microphone.') for line in frames)
+    assert f'[watch] described {len(frames)}/{len(frames)} (' in captured.err
+    timing = next(line for line in captured.err.splitlines() if line.startswith('[watch] time: '))
+    assert timing.split(' · ')[-1].startswith('total ')
     assert f'**Frame descriptions:** {len(frames)} via qwen2.5vl:3b' in out
     assert 'open only the frame files' in out and 'Read every `FRAME` file' not in out
     asked = len(server['requests'])

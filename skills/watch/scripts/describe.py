@@ -11,6 +11,9 @@ from __future__ import annotations
 import base64
 import json
 import re
+import sys
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -129,6 +132,15 @@ def describe_frames(frames: list[dict], s: dict) -> dict:
     """Map frame path → description. Local models run one at a time; cloud endpoints in parallel."""
     frames = pick(frames, s['max'])
     workers = 1 if is_local(s['url']) else 4
+    done, lock = [0], threading.Lock()
+    def one(frame):
+        started = time.monotonic()
+        text = describe_frame(frame['path'], s)
+        with lock:  # Per-frame timing shows a cold model load or a slow endpoint as it happens.
+            done[0] += 1
+            print(f"[watch] described {done[0]}/{len(frames)} ({time.monotonic() - started:.1f} s)",
+                  file=sys.stderr, flush=True)
+        return text
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        texts = list(pool.map(lambda f: describe_frame(f['path'], s), frames))
+        texts = list(pool.map(one, frames))
     return {f['path']: t for f, t in zip(frames, texts) if t}
