@@ -29,6 +29,37 @@ def test_far_apart_words_and_low_confidence_lines_are_separate_or_dropped():
     assert sorted(l['text'] for l in ocr.parse_tsv(tsv)) == ['left', 'right']
 
 
+def page(text, number, left=100, top=100):
+    return f'5\t{number}\t1\t1\t1\t1\t{left}\t{top}\t200\t40\t90\t{text}'
+
+
+def test_one_tesseract_process_reads_a_list_and_splits_pages(monkeypatch, tmp_path):
+    calls = []
+    def fake(cmd, **kwargs):
+        calls.append(cmd)
+        listed = Path(cmd[1]).read_text(encoding='utf-8').splitlines()
+        assert listed == ['/a b/raw_1.jpg', '/a b/raw_2.jpg', '/a b/raw_3.jpg']
+        # Page 2 has no words; blank separator rows between pages are ignored.
+        out = '\n'.join([HEADER, '1\t1\t0\t0\t0\t0\t0\t0\t720\t1280\t-1\t', page('Hello', 1), page('there', 1, 330), '',
+                         '1\t2\t0\t0\t0\t0\t0\t0\t720\t1280\t-1\t', page('Book', 3), page('now', 3, 330)])
+        return subprocess.CompletedProcess(cmd, 0, out, '')
+    monkeypatch.setattr(ocr, 'run_text', fake)
+    pages = ocr._tesseract(['/a b/raw_1.jpg', '/a b/raw_2.jpg', '/a b/raw_3.jpg'], 'eng', '3', tmp_path / 'list.txt')
+    assert [[l['text'] for l in p] for p in pages] == [['Hello there'], [], ['Book now']]
+    assert len(calls) == 1 and calls[0][2:] == ['stdout', '-l', 'eng', '--psm', '3', 'tsv']
+
+
+def test_read_tesseract_keeps_sample_order_across_batches(monkeypatch, tmp_path):
+    monkeypatch.setattr(ocr.os, 'cpu_count', lambda: 2)
+    samples = [{'path': str(tmp_path / f'raw_{i}.jpg'), 'mask': str(tmp_path / f'mask_{i}.png') if i % 2 else None}
+               for i in range(13)]
+    def fake(paths, lang, psm, listing):
+        return [[{'text': f"{psm}:{Path(p).stem}", 'conf': 0.9, 'y': 1 if psm == '3' else 2}] for p in paths]
+    monkeypatch.setattr(ocr, '_tesseract', fake)
+    out = ocr.read_tesseract(samples, 'eng')
+    assert out == [[f'3:raw_{i}'] + ([f'11:mask_{i}'] if i % 2 else []) for i in range(13)]
+
+
 def test_clean_strips_symbol_tokens_and_stray_end_characters():
     assert ocr.clean('4 Never open a call 4 ©') == 'Never open a call'
     assert ocr.clean("you've got © their full |") == "you've got their full"
