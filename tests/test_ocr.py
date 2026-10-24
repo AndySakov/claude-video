@@ -60,6 +60,48 @@ def test_read_tesseract_keeps_sample_order_across_batches(monkeypatch, tmp_path)
     assert out == [[f'3:raw_{i}'] + ([f'11:mask_{i}'] if i % 2 else []) for i in range(13)]
 
 
+def test_vision_helper_is_compiled_once_and_cached(monkeypatch):
+    compiles = []
+    def fake_run(cmd, **kwargs):
+        compiles.append(cmd)
+        Path(cmd[cmd.index('-o') + 1]).write_text('binary')
+        return subprocess.CompletedProcess(cmd, 0, '', '')
+    monkeypatch.setattr(ocr.shutil, 'which', lambda name: '/usr/bin/swiftc' if name == 'swiftc' else None)
+    monkeypatch.setattr(ocr, 'run_text', fake_run)
+    first = ocr.vision_command()
+    assert first == [str(ocr.vision_binary())] and Path(first[0]).read_text() == 'binary'
+    assert ocr.vision_command() == first and len(compiles) == 1, 'a cached helper must not be rebuilt'
+    assert compiles[0][:3] == ['/usr/bin/swiftc', '-O', str(ocr.VISION_SCRIPT)]
+    assert not list(Path(first[0]).parent.glob('*.part'))
+
+
+def test_vision_falls_back_to_the_interpreter_when_compiling_fails(monkeypatch, capsys):
+    monkeypatch.setattr(ocr.shutil, 'which', lambda name: '/usr/bin/swiftc' if name == 'swiftc' else None)
+    monkeypatch.setattr(ocr, 'run_text', lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, '', 'error: no SDK'))
+    assert ocr.vision_command() == ['swift', str(ocr.VISION_SCRIPT)]
+    assert 'no SDK' in capsys.readouterr().err and not ocr.vision_binary().exists()
+    monkeypatch.setattr(ocr.shutil, 'which', lambda name: None)
+    assert ocr.vision_command() == ['swift', str(ocr.VISION_SCRIPT)]
+
+
+def test_read_vision_splits_samples_across_helpers_and_keeps_order(monkeypatch, tmp_path):
+    helper = tmp_path / 'helper.py'
+    helper.write_text("""import json, os, sys
+for path in sys.stdin.read().split(chr(10)):
+    if path:
+        name = os.path.basename(path).split('.')[0]
+        print(json.dumps({'path': path, 'lines': [{'text': 'Frame ' + name, 'conf': 0.9, 'y': 0.5}]}))
+""", encoding='utf-8')
+    monkeypatch.setattr(ocr, 'vision_command', lambda: [sys.executable, str(helper)])
+    monkeypatch.setattr(ocr, 'VISION_WORKERS', 3)
+    calls = []
+    real = ocr.run_text
+    monkeypatch.setattr(ocr, 'run_text', lambda cmd, **kw: calls.append(kw['input'].count(chr(10))) or real(cmd, **kw))
+    samples = [{'path': str(tmp_path / f'raw_{i:04d}.jpg')} for i in range(10)]
+    assert ocr.read_vision(samples) == [[f'Frame raw_{i:04d}'] for i in range(10)]
+    assert sorted(calls) == [2, 4, 4]
+
+
 def test_clean_strips_symbol_tokens_and_stray_end_characters():
     assert ocr.clean('4 Never open a call 4 ©') == 'Never open a call'
     assert ocr.clean("you've got © their full |") == "you've got their full"

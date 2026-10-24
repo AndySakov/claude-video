@@ -14,6 +14,7 @@ moving video.
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import os
 import re
@@ -51,6 +52,7 @@ SPOKEN_OVERLAP = 0.6
 # A short line that keeps re-appearing is a background graphic being re-read, not a caption.
 RECURRING_NOISE = 3
 VISION_SCRIPT = Path(__file__).with_name('ocr_vision.swift')
+VISION_WORKERS = 4  # Concurrent helper processes; each reads one contiguous chunk of samples.
 
 
 def resolve(choice: str) -> tuple[str | None, str | None]:
@@ -219,13 +221,49 @@ def read_tesseract(samples: list[dict], lang: str) -> list[list[str]]:
     return [merge_passes(a, b) for a, b in zip(plain, masked)]
 
 
+def vision_binary() -> Path:
+    """Where the compiled helper lives; the source hash in the name recompiles it after an update."""
+    digest = hashlib.sha256(VISION_SCRIPT.read_bytes()).hexdigest()[:12]
+    return Path.home() / '.cache' / 'watch' / 'ocr-vision' / f'ocr_vision-{digest}'
+
+
+def vision_command() -> list[str]:
+    """The compiled helper, built once with swiftc; `swift script` compiles on every run (~2 min on an M1 Pro)."""
+    binary = vision_binary()
+    if binary.is_file():
+        return [str(binary)]
+    swiftc = shutil.which('swiftc')
+    if swiftc:
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        partial = binary.with_name(f'{binary.name}.{os.getpid()}.part')
+        print('[watch] compiling the Apple Vision OCR helper (first run only)…', file=sys.stderr, flush=True)
+        result = run_text([swiftc, '-O', str(VISION_SCRIPT), '-o', str(partial)], timeout=600)
+        if result.returncode == 0 and partial.is_file():
+            os.replace(partial, binary)  # Atomic: a concurrent run sees no binary or a whole one.
+            return [str(binary)]
+        partial.unlink(missing_ok=True)
+        print(f'[watch] swiftc failed; using the slower swift interpreter ({diagnostic(result.stderr, 300)})',
+              file=sys.stderr)
+    return ['swift', str(VISION_SCRIPT)]
+
+
 def read_vision(samples: list[dict]) -> list[list[str]]:
-    paths = '\n'.join(s['path'] for s in samples) + '\n'
-    result = run_text(['swift', str(VISION_SCRIPT)], input=paths, timeout=60 + 3 * len(samples))
-    if result.returncode != 0:
-        raise SystemExit(f'Apple Vision OCR failed: {diagnostic(result.stderr, 400)}')
+    """Vision waits on the Neural Engine/GPU per image, so a few helpers read chunks side by side."""
+    if not samples:
+        return []
+    command = vision_command()
+    size = -(-len(samples) // VISION_WORKERS)
+    chunks = [samples[i:i + size] for i in range(0, len(samples), size)]
+    def run(chunk):
+        paths = ''.join(f"{s['path']}\n" for s in chunk)
+        result = run_text(command, input=paths, timeout=60 + 3 * len(chunk))
+        if result.returncode != 0:
+            raise SystemExit(f'Apple Vision OCR failed: {diagnostic(result.stderr, 400)}')
+        return result.stdout
+    with ThreadPoolExecutor(max_workers=len(chunks)) as pool:
+        outputs = list(pool.map(run, chunks))
     by_path = {}
-    for row in result.stdout.splitlines():
+    for row in '\n'.join(outputs).splitlines():
         try:
             item = json.loads(row)
             by_path[item['path']] = [
