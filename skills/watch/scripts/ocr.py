@@ -49,6 +49,10 @@ CAPTION_MAX_SECONDS = 2.5
 CAPTION_GAP = 1.5
 CAPTION_RUN_WORDS = 30
 SPOKEN_OVERLAP = 0.6
+# A line below this confidence (0-1) must be echoed by a sample within CONFIRM_REACH on either side.
+# Tuned on three Reels: it removed whiteboard misreads and kept slide text and captions.
+CONFIRM_CONF = 0.85
+CONFIRM_REACH = 2
 # A short line that keeps re-appearing is a background graphic being re-read, not a caption.
 RECURRING_NOISE = 3
 VISION_SCRIPT = Path(__file__).with_name('ocr_vision.swift')
@@ -193,17 +197,45 @@ def _tesseract(paths: list[str], lang: str, psm: str, listing: Path) -> list[lis
     return [parse_tsv('\n'.join([header, *pages.get(page, [])])) for page in range(1, len(paths) + 1)]
 
 
-def merge_passes(*passes: list[dict]) -> list[str]:
+def merge_passes(*passes: list[dict]) -> list[dict]:
     """Union of passes for one sample, near-duplicates collapsed, top-to-bottom order."""
     kept: list[dict] = []
     for line in sorted((l for p in passes for l in p), key=lambda l: -l['conf']):
         if not any(similar(norm(line['text']), norm(k['text'])) for k in kept):
             kept.append(line)
     kept = kept[:MAX_LINES_PER_SAMPLE]
-    return [l['text'] for l in sorted(kept, key=lambda l: l['y'])]
+    return sorted(kept, key=lambda l: l['y'])
 
 
-def read_tesseract(samples: list[dict], lang: str) -> list[list[str]]:
+def _echoes(line: dict, others: list[dict]) -> bool:
+    """Another sample read the same text: a matching line, or most of the same words."""
+    key = norm(line['text'])
+    words = {w for w in key.split() if len(w) > 1}
+    for other in others:
+        okey = norm(other['text'])
+        if similar(key, okey) or (len(key) >= 4 and (key in okey or okey in key)):
+            return True
+        if words and len(words & {w for w in okey.split() if len(w) > 1}) >= (len(words) + 1) // 2:
+            return True
+    return False
+
+
+def confirm_lines(per_sample: list[list[dict]]) -> list[list[str]]:
+    """Drop unconfident lines that no neighbouring sample reads the same way.
+
+    Real text stays on screen across samples and reads alike each time; textures and
+    handwriting (a whiteboard behind a speaker) come back as different fragments every
+    sample ("KALA\\ N Pw by", "Pury Concern"). Confident lines always stay.
+    """
+    out = []
+    for i, lines in enumerate(per_sample):
+        near = [l for j in range(max(0, i - CONFIRM_REACH), min(len(per_sample), i + CONFIRM_REACH + 1))
+                if j != i for l in per_sample[j]]
+        out.append([l['text'] for l in lines if l['conf'] >= CONFIRM_CONF or _echoes(l, near)])
+    return out
+
+
+def read_tesseract(samples: list[dict], lang: str) -> list[list[dict]]:
     """Plain frames (psm 3) and bright-text masks (psm 11), each split into one batch per worker."""
     if not samples:
         return []
@@ -250,7 +282,7 @@ def vision_command() -> list[str]:
     return ['swift', str(VISION_SCRIPT)]
 
 
-def read_vision(samples: list[dict]) -> list[list[str]]:
+def read_vision(samples: list[dict]) -> list[list[dict]]:
     """Vision waits on the Neural Engine/GPU per image, so a few helpers read chunks side by side."""
     if not samples:
         return []
@@ -435,7 +467,7 @@ def on_screen_text(video_path: str, work: Path, backend: str, *, lang: str, fps:
     try:
         samples = extract_samples(video_path, directory, rate=rate, start=start, end=end,
                                   mask=backend == 'tesseract')
-        texts = read_tesseract(samples, lang) if backend == 'tesseract' else read_vision(samples)
+        texts = confirm_lines(read_tesseract(samples, lang) if backend == 'tesseract' else read_vision(samples))
     finally:
         shutil.rmtree(directory, ignore_errors=True)  # Samples are inputs, not evidence.
     events = caption_runs(drop_recurring(track([(s['timestamp_seconds'], lines) for s, lines in zip(samples, texts)], 1 / rate)))
