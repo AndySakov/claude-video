@@ -42,8 +42,16 @@ def test_byte_valued_timeout(monkeypatch):
     def fail(*a, **kw):
         raise subprocess.TimeoutExpired('ffprobe', 30, stderr=b'bad\xff')
     monkeypatch.setattr(runtime.subprocess, 'run', fail)
-    with pytest.raises(SystemExit, match='timed out.*bad'):
+    with pytest.raises(SystemExit, match='timed out after 30 s: .*bad'):
         frames.get_metadata('anything.mp4')
+
+
+def test_silent_timeout_says_how_long_it_waited(monkeypatch):
+    def fail(*a, **kw):
+        raise subprocess.TimeoutExpired('/Users/me/.cache/watch/ocr-vision/ocr_vision-abc', 267, stderr=None)
+    monkeypatch.setattr(runtime.subprocess, 'run', fail)
+    with pytest.raises(SystemExit, match=r'^ocr_vision-abc timed out after 267 s with no output$'):
+        runtime.run_text(['/Users/me/.cache/watch/ocr-vision/ocr_vision-abc'])
 
 
 @pytest.mark.parametrize('data', ['not json', '{}', '{"streams":[]}', '{"streams":[{"codec_type":"video"}],"format":{"duration":"NaN"}}'])

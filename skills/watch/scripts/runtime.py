@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 
 
 def configure_stdio() -> None:
@@ -27,7 +28,9 @@ def run_text(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
     try:
         return subprocess.run(cmd, capture_output=True, encoding='utf-8', errors='replace', **kwargs)
     except subprocess.TimeoutExpired as exc:
-        raise SystemExit(f'{cmd[0]} timed out: {diagnostic(exc.stderr)}') from None
+        detail = diagnostic(exc.stderr)
+        raise SystemExit(f'{Path(str(cmd[0])).name} timed out after {exc.timeout:.0f} s'
+                         + (f': {detail}' if detail else ' with no output')) from None
     except OSError as exc:
         raise SystemExit(
             f'Cannot run {cmd[0]} ({type(exc).__name__}). Check that the executable is installed '
