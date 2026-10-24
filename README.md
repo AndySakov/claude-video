@@ -31,7 +31,7 @@ Choose **one installation method** for your agent. If Watch is already installed
 4. In **URL**, paste the address below. If a picker opens, paste into its search field and select **Use** for that URL. Click **Sync**.
 
 ```text
-https://github.com/bradautomates/claude-video
+https://github.com/AndySakov/claude-video
 ```
 
 ![Marketplace URL form filled with the public claude-video GitHub address and a Sync button](docs/images/install/claude-marketplace-url.png)
@@ -49,7 +49,7 @@ If you do not see these controls, update Claude Desktop. On a managed account, y
 
 ```text
 Use $skill-installer to install the watch skill from:
-https://github.com/bradautomates/claude-video/tree/main/skills/watch
+https://github.com/AndySakov/claude-video/tree/main/skills/watch
 ```
 
 Let Codex finish the installation, then start a new turn or session and ask it to use **watch**. If the skill does not appear, restart Codex. You do not need Node/npm for this route. See [OpenAI's skill installation guide](https://learn.chatgpt.com/docs/build-skills#install-curated-skills-for-local-use).
@@ -60,7 +60,7 @@ Let Codex finish the installation, then start a new turn or session and ask it t
 If you already have the Codex CLI installed, run these **in your computer's terminal**, one at a time:
 
 ```bash
-codex plugin marketplace add bradautomates/claude-video
+codex plugin marketplace add AndySakov/claude-video
 codex plugin add watch@claude-video
 ```
 
@@ -80,7 +80,7 @@ Continue with [your first video](#try-your-first-video).
 
 1. Open the **Claude Code** panel in VS Code.
 2. Type **`/plugins`** into the Claude Code message box to open **Manage plugins**.
-3. Select **Marketplaces** and add `bradautomates/claude-video`.
+3. Select **Marketplaces** and add `AndySakov/claude-video`.
 4. Return to **Plugins**, find **watch**, and choose **Install for you** to use it across your projects.
 5. Follow any activation or restart message. Then type `/watch` and select the suggested skill — normally **`/watch:watch`** — or ask Claude to use watch by name.
 
@@ -93,7 +93,7 @@ Continue with [your first video](#try-your-first-video).
 Open a terminal and start **Claude Code** with `claude`. Enter these **inside the Claude Code session**, one at a time:
 
 ```text
-/plugin marketplace add bradautomates/claude-video
+/plugin marketplace add AndySakov/claude-video
 /plugin install watch@claude-video
 ```
 
@@ -105,7 +105,7 @@ Follow the activation message. If Watch is not available yet, start a new Claude
 Use these executable commands instead of the slash commands:
 
 ```bash
-claude plugin marketplace add bradautomates/claude-video
+claude plugin marketplace add AndySakov/claude-video
 claude plugin install watch@claude-video
 ```
 
@@ -120,7 +120,7 @@ Continue with [your first video](#try-your-first-video).
 For other [Agent Skills hosts](https://agentskills.io), install [Node.js](https://nodejs.org/en/download) if needed, then run this **in your computer's terminal**:
 
 ```bash
-npx skills add bradautomates/claude-video -g --skill watch
+npx skills add AndySakov/claude-video -g --skill watch
 ```
 
 Select your agent when prompted, follow the installer's reported destination, then restart the agent. Node/npm is needed for this installer, not for Watch's Python runtime.
