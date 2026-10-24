@@ -141,6 +141,9 @@ def get_config(*, backend_override: str | None = None) -> dict:
     ocr = setting('WATCH_OCR', 'auto') or 'auto'
     if ocr not in OCR_CHOICES:
         raise ConfigError('WATCH_OCR must be auto, tesseract, vision, or none.')
+    gemini_mode = setting('WATCH_GEMINI_MODE', 'answer') or 'answer'
+    if gemini_mode not in ('answer', 'timeline'):
+        raise ConfigError('WATCH_GEMINI_MODE must be answer or timeline.')
     engine = setting('WATCH_ENGINE', 'auto')
     if engine not in ENGINES:
         raise ConfigError('WATCH_ENGINE must be auto, gemini, or local.')
@@ -151,11 +154,18 @@ def get_config(*, backend_override: str | None = None) -> dict:
         'engine': engine,
         'gemini_model': setting('WATCH_GEMINI_MODEL', DEFAULT_GEMINI_MODEL) or DEFAULT_GEMINI_MODEL,
         'gemini_timeout': positive_number(setting('WATCH_GEMINI_TIMEOUT', '600'), 'WATCH_GEMINI_TIMEOUT'),
+        'gemini_mode': gemini_mode,
         'sub_lang': setting('WATCH_SUB_LANG', 'auto'),
         'cookies_file': setting('WATCH_COOKIES_FILE'),
         'cookies_from_browser': setting('WATCH_COOKIES_FROM_BROWSER'),
         'cache_dir': setting('WATCH_CACHE_DIR'),
         'ocr': ocr,
+        'describe': setting('WATCH_DESCRIBE', 'auto') or 'auto',
+        'describe_url': setting('WATCH_DESCRIBE_URL'),
+        'describe_model': setting('WATCH_DESCRIBE_MODEL'),
+        'describe_key': setting('WATCH_DESCRIBE_KEY'),
+        'describe_timeout': setting('WATCH_DESCRIBE_TIMEOUT'),
+        'describe_max': setting('WATCH_DESCRIBE_MAX'),
         'ocr_lang': setting('WATCH_OCR_LANG', 'eng') or 'eng',
         'ocr_fps': None if setting('WATCH_OCR_FPS', 'auto') in ('', 'auto') else positive_number(setting('WATCH_OCR_FPS'), 'WATCH_OCR_FPS'),
         'groq_model': setting('WATCH_GROQ_MODEL', 'whisper-large-v3-turbo') or 'whisper-large-v3-turbo',

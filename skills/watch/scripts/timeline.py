@@ -86,7 +86,8 @@ def short_description(text) -> str | None:
     return text or None
 
 
-def build(*, frames: list[dict], lines: list[dict], text: list[dict] = (), chapters: list[dict] | None = None,
+def build(*, frames: list[dict], lines: list[dict], text: list[dict] = (), scenes: list[dict] = (),
+          chapters: list[dict] | None = None,
           description: str | None = None, header: dict | None = None,
           speech_source: str | None = None) -> dict:
     return {
@@ -96,10 +97,12 @@ def build(*, frames: list[dict], lines: list[dict], text: list[dict] = (), chapt
         'description': description,
         'speech_source': speech_source,
         'frames': [{'file': Path(f['path']).name, 't': round(f['timestamp_seconds'], 3),
-                    'reason': f.get('reason', 'selected')} for f in frames],
+                    'reason': f.get('reason', 'selected'),
+                    **({'desc': f['description']} if f.get('description') else {})} for f in frames],
         'lines': [{'start': round(l['start'], 3), 'end': round(l['end'], 3), 'text': l['text']} for l in lines],
         'text': [{'start': round(e['start'], 3), 'end': round(e['end'], 3), 'text': e['text'],
                   'kind': e.get('kind', 'text')} for e in text],
+        'scenes': [{'t': round(s['t'], 3), 'desc': s['description']} for s in scenes],
     }
 
 
@@ -108,7 +111,9 @@ def events(data: dict) -> list[str]:
 
     Text that appears in the same OCR sample (a slide's lines) shares one row.
     """
-    rows = [(f['t'], 0, f"[{clock(f['t'])}] FRAME {f['file']} ({f['reason']})") for f in data['frames']]
+    rows = [(f['t'], 0, f"[{clock(f['t'])}] FRAME {f['file']} ({f['reason']})" + (f": {f['desc']}" if f.get('desc') else ''))
+            for f in data['frames']]
+    rows += [(s['t'], 0, f"[{clock(s['t'])}] SCENE: {s['desc']}") for s in data.get('scenes', [])]
     shown: dict[float, list[str]] = {}
     for item in data.get('text', []):
         if item.get('kind') == 'caption':
@@ -133,15 +138,27 @@ def render_sections(data: dict, frames_dir: Path | None) -> str:
     if data['frames'] and frames_dir is not None:
         out.append(f'Frames live at: `{frames_dir}`')
         out.append('')
-        out.append('**Read every `FRAME` file below from that directory with the Read tool.** '
-                   'A frame shows what is on screen from its time until the next FRAME line.')
+        if any(f.get('desc') for f in data['frames']):
+            out.append('`FRAME` lines carry a model-written description; a frame shows what is on screen from its '
+                       'time until the next FRAME line. **Read the timeline first, then open only the frame files '
+                       'whose exact visual detail the answer needs** (small text, colours, layout, expressions). '
+                       'Descriptions can be wrong; a frame file is the evidence.'
+                       + (' FRAME lines without a description were not described; open them when that moment matters.'
+                          if not all(f.get('desc') for f in data['frames']) else ''))
+        else:
+            out.append('**Read every `FRAME` file below from that directory with the Read tool.** '
+                       'A frame shows what is on screen from its time until the next FRAME line.')
         out.append('')
     if data.get('text'):
         out.append('`CAPTION:` lines are burned-in captions read by OCR and merged into phrases (usually the '
                    'spoken words). `TEXT:` lines are other on-screen text (slides, UI, overlays) when it appears; '
                    '`/` separates lines shown together. OCR can misread stylized text.')
         out.append('')
-    if data['frames'] or data.get('text'):
+    if data.get('scenes'):
+        out.append("`SCENE:` lines are the remote model's description of what is on screen; there are no frame files. "
+                   'Rerun with `--engine local` when exact pixels matter.')
+        out.append('')
+    if data['frames'] or data.get('text') or data.get('scenes'):
         out.append('`[MM:SS]` is absolute source time. Lines without a tag are speech.')
         out.append('')
     if data['speech_source']:

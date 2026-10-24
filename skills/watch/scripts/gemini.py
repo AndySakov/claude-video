@@ -15,6 +15,7 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from frames import parse_time
 from runtime import diagnostic
 
 API = 'https://generativelanguage.googleapis.com'
@@ -35,6 +36,52 @@ DEFAULT_QUESTION = ('Give a thorough summary of this video: what is shown, any o
 PROMPT_SUFFIX = ('\n\nCite an MM:SS (or H:MM:SS) timestamp for every claim about a specific moment. '
                  'Separate what is seen from what is heard when it matters. If the video does not '
                  'show or say something needed to answer, say so plainly instead of guessing.')
+
+
+# Timeline mode: Gemini returns structured evidence that watch renders into the same cached
+# timeline as the local engine, so follow-up questions are answered without another upload.
+TIMELINE_PROMPT = (
+    'Watch the whole video and return ONLY a JSON object, no other text, with three arrays in chronological order.\n'
+    '"scenes": [{"t": "MM:SS", "description": "..."}]: one entry per distinct shot or visual change, a single '
+    'sentence on the setting, who is visible and what they do, and notable objects or graphics.\n'
+    '"speech": [{"t": "MM:SS", "speaker": "...", "text": "..."}]: everything said, verbatim, one sentence or '
+    'short passage per entry. Give a short speaker label (e.g. "Host", "Guest") only when more than one person speaks.\n'
+    '"on_screen_text": [{"t": "MM:SS", "text": "..."}]: burned-in captions, titles, slides, and other text when '
+    'it first appears, verbatim.\n'
+    'Use H:MM:SS past one hour. Include only what is actually seen or heard.')
+
+
+def parse_timeline(text: str) -> dict:
+    """Gemini's JSON (possibly fenced or wrapped in prose) → sorted scenes, speech, and on-screen text."""
+    body = text.strip()
+    fenced = re.search(r'```(?:json)?\s*(.*?)```', body, re.S)
+    if fenced:
+        body = fenced.group(1)
+    start, end = body.find('{'), body.rfind('}')
+    data = json.loads(body[start:end + 1]) if start >= 0 and end > start else None
+    if not isinstance(data, dict):
+        raise ValueError('no JSON object in the response')
+
+    def items(key, field):
+        out = []
+        for item in data.get(key) or []:
+            if not isinstance(item, dict):
+                continue
+            value = ' '.join(str(item.get(field) or '').split())
+            try:
+                seconds = parse_time(str(item.get('t', '')))
+            except SystemExit:
+                continue
+            if value and seconds is not None:
+                speaker = ' '.join(str(item.get('speaker') or '').split())
+                out.append({'t': seconds, field: value, **({'speaker': speaker} if speaker else {})})
+        return sorted(out, key=lambda x: x['t'])
+
+    parsed = {'scenes': items('scenes', 'description'), 'speech': items('speech', 'text'),
+              'text': items('on_screen_text', 'text')}
+    if not any(parsed.values()):
+        raise ValueError('the JSON had no timestamped scenes, speech, or on-screen text')
+    return parsed
 
 
 def is_youtube(source: str) -> bool:
@@ -97,10 +144,11 @@ def _processing(clip):
     return config, label
 
 
-def ask(video: dict, question: str | None, *, model: str, key: str, clip=None, timeout: float = 600.0) -> dict:
+def ask(video: dict, question: str | None, *, model: str, key: str, clip=None, timeout: float = 600.0,
+        prompt: str | None = None) -> dict:
     processing, label = _processing(clip)
     payload = {'model': model, 'input': [{'type': 'video', **video, 'processing': processing},
-                                         {'type': 'text', 'text': build_prompt(question)}]}
+                                         {'type': 'text', 'text': prompt or build_prompt(question)}]}
     _, _, body = _call('POST', INTERACTIONS, key, data=json.dumps(payload).encode('utf-8'),
                        headers={'Content-Type': 'application/json'}, timeout=timeout)
     try:

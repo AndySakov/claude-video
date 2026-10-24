@@ -25,13 +25,14 @@ from transcribe import filter_range, parse_vtt  # noqa: E402
 import cache  # noqa: E402
 import timeline  # noqa: E402
 import ocr  # noqa: E402
+import describe  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
 from runtime import configure_stdio  # noqa: E402
 
 
 LOCAL_ONLY_FLAGS = (("--detail", "detail"), ("--fps", "fps"), ("--max-frames", "max_frames"),
                     ("--timestamps", "timestamps"), ("--whisper", "whisper"), ("--sub-lang", "sub_lang"),
-                    ("--ocr", "ocr"))
+                    ("--ocr", "ocr"), ("--describe", "describe"))
 
 
 def run_gemini(args, config, key, start_sec, end_sec, auth) -> int:
@@ -39,6 +40,20 @@ def run_gemini(args, config, key, start_sec, end_sec, auth) -> int:
     ignored = [flag for flag, name in LOCAL_ONLY_FLAGS if getattr(args, name) is not None]
     ignored += [flag for flag, on in (("--no-whisper", args.no_whisper), ("--no-dedup", args.no_dedup)) if on]
     clip = (start_sec, end_sec) if start_sec is not None or end_sec is not None else None
+    mode = args.gemini_mode or config["gemini_mode"]
+    cache_root = cache_key = None
+    if mode == "timeline":  # A timeline answers every later question, so it is cached like a local run.
+        cache_root = None if args.no_cache else cache.resolve_root(config["cache_dir"])
+        cache_key = cache_root and cache.run_key(args.source, {
+            "timeline": timeline.VERSION, "engine": "gemini", "model": config["gemini_model"], "clip": clip})
+        hit = cache.lookup(cache_root, cache_key) if cache_key and not args.refresh else None
+        if hit:
+            print("[watch] reusing cached Gemini timeline", file=sys.stderr)
+            print((hit / "timeline.md").read_text(encoding="utf-8"))
+            print()
+            print("---")
+            print(f"_Cached timeline: `{hit}` — reused without contacting Google; pass `--refresh` to rebuild._")
+            return 0
     uploaded, warning, result, error, sent, work = None, None, None, None, "URL sent to Google", None
     try:
         if gemini.is_youtube(args.source):
@@ -56,9 +71,10 @@ def run_gemini(args, config, key, start_sec, end_sec, auth) -> int:
             uploaded = gemini.upload_file(Path(media["video_path"]), key)
             video = {"uri": uploaded["uri"], "mime_type": uploaded["mime_type"]}
             sent = "video uploaded to Google, deleted after the answer"
-        print(f"[watch] asking {config['gemini_model']}…", file=sys.stderr)
-        result = gemini.ask(video, args.question, model=config["gemini_model"], key=key,
-                            clip=clip, timeout=config["gemini_timeout"])
+        print(f"[watch] asking {config['gemini_model']}{' for a timeline' if mode == 'timeline' else ''}…", file=sys.stderr)
+        result = gemini.ask(video, args.question, model=config["gemini_model"], key=key, clip=clip,
+                            timeout=config["gemini_timeout"],
+                            prompt=gemini.TIMELINE_PROMPT if mode == "timeline" else None)
     except SystemExit as exc:
         error = str(exc)
     finally:
@@ -67,31 +83,71 @@ def run_gemini(args, config, key, start_sec, end_sec, auth) -> int:
         if work:  # Run-owned; holds at most a downloaded copy. A local source file lives elsewhere.
             shutil.rmtree(work, ignore_errors=True)
 
-    print()
-    print("# watch: video report")
-    print()
-    print(f"- **Source:** {args.source} ({sent})")
-    print(f"- **Engine:** {config['gemini_model']} ({result['processing'] if result else 'failed'})")
+    head = ["# watch: video report", "", f"- **Source:** {args.source} ({sent})",
+            f"- **Engine:** {config['gemini_model']} ({result['processing'] if result else 'failed'}"
+            f"{', timeline' if mode == 'timeline' else ''})"]
     if clip:
-        print(f"- **Focus range:** {format_time(start_sec or 0)} → {format_time(end_sec) if end_sec is not None else 'end'}")
+        head.append(f"- **Focus range:** {format_time(start_sec or 0)} → {format_time(end_sec) if end_sec is not None else 'end'}")
     if ignored:
-        print(f"- **Ignored local options:** {', '.join(ignored)} (these only apply with --engine local)")
+        head.append(f"- **Ignored local options:** {', '.join(ignored)} (these only apply with --engine local)")
     if result and result["total_tokens"] is not None:
-        print(f"- **Gemini tokens:** {result['total_tokens']}")
+        head.append(f"- **Gemini tokens:** {result['total_tokens']}")
     if warning:
-        print(f"- **Cleanup warning:** {warning}")
+        head.append(f"- **Cleanup warning:** {warning}")
+    print()
+    print("\n".join(head))
     print()
     if error:
         print("## Unavailable evidence")
         print()
         print(f"- {error}")
         return 1
+    if mode == "timeline":
+        try:
+            parsed = gemini.parse_timeline(result["text"])
+        except ValueError as exc:
+            print("## Unavailable evidence")
+            print()
+            print(f"- Gemini's timeline was unreadable ({exc}); its raw answer follows and was not cached.")
+            print()
+        else:
+            return render_gemini_timeline(args, config, parsed, head, cache_root, cache_key)
     print("## Answer (from Gemini)")
     print()
     print("_These are Gemini's observations of the video, not frames you viewed yourself. "
           "Relay them as such; rerun with `--engine local` to inspect frames directly._")
     print()
     print(result["text"])
+    return 0
+
+
+def render_gemini_timeline(args, config, parsed, head, cache_root, cache_key) -> int:
+    """Gemini's scenes, speech, and on-screen text in the local engine's timeline format."""
+    speech = parsed["speech"]
+    lines = [{"start": item["t"], "end": speech[i + 1]["t"] if i + 1 < len(speech) else item["t"],
+              "text": (f"{item['speaker']}: " if item.get("speaker") else "") + item["text"]}
+             for i, item in enumerate(speech)]
+    shown = [{"start": e["t"], "end": e["t"], "text": e["text"], "kind": "text"} for e in parsed["text"]]
+    head = head + [f"- **Timeline:** {len(parsed['scenes'])} scenes, {len(lines)} speech lines, "
+                   f"{len(shown)} on-screen text lines (from Gemini)"]
+    data = timeline.build(frames=[], lines=lines, text=shown, scenes=parsed["scenes"],
+                          speech_source=f"Gemini ({config['gemini_model']}), verbatim as reported",
+                          header={"source": args.source, "engine": config["gemini_model"]})
+    report = "\n".join(head) + "\n\n" + timeline.render_sections(data, None)
+    print(timeline.render_sections(data, None))
+    if cache_key:
+        staging = None
+        try:
+            staging = cache.begin(cache_root)
+            timeline.write(data, staging, report)
+            entry = cache.commit(cache_root, cache_key, staging)
+            print()
+            print("---")
+            print(f"_Timeline: `{entry / 'timeline.md'}` (+ `timeline.json`) — cached; reruns reuse it without contacting Google._")
+        except OSError as exc:
+            if staging:
+                cache.abandon(staging)
+            print(f"[watch] cache not saved ({type(exc).__name__}: {exc})", file=sys.stderr)
     return 0
 
 
@@ -146,11 +202,17 @@ def main() -> int:
     ap.add_argument("--engine", choices=["auto", "gemini", "local"], default=None,
                     help="gemini: Google watches the video and answers (needs GEMINI_API_KEY). "
                          "local: frames + transcript on this machine. Default auto: gemini when a key exists.")
+    ap.add_argument("--gemini-mode", choices=["answer", "timeline"], default=None,
+                    help="Gemini engine only: answer the question (default), or return a cached, timestamped "
+                         "timeline of scenes, speech, and on-screen text that later questions are answered from.")
     ap.add_argument("--question", default=None,
                     help="The user's question. Sent to Gemini on a gemini run; unused by the local engine.")
     ap.add_argument("--ocr", choices=list(ocr.CHOICES), default=None,
                     help="Read on-screen text (burned-in captions, slides, UI): auto (tesseract, else Apple "
                          "Vision on macOS, else off), tesseract, vision, or none.")
+    ap.add_argument("--describe", choices=list(describe.CHOICES), default=None,
+                    help="Describe each frame with a vision model at WATCH_DESCRIBE_URL (default local Ollama): "
+                         "auto (only when the endpoint has the model), on, or off.")
     ap.add_argument("--no-cache", action="store_true",
                     help="Neither reuse nor save a cached timeline for this run.")
     ap.add_argument("--refresh", action="store_true",
@@ -179,6 +241,8 @@ def main() -> int:
     sub_lang = args.sub_lang or config["sub_lang"]
     ocr_choice = args.ocr or config["ocr"]
     ocr_backend, ocr_problem = ocr.resolve(ocr_choice)
+    vision = describe.settings({**config, "describe": args.describe or config["describe"]})
+    describe_on, describe_problem = describe.resolve(vision) if detail != "transcript" else (False, None)
     cache_root = None if args.no_cache else cache.resolve_root(config["cache_dir"])
     # Every option that changes the evidence is part of the key; --question is not (unused locally).
     cache_key = cache_root and cache.run_key(args.source, {
@@ -189,6 +253,7 @@ def main() -> int:
         "whispercpp": [config["whispercpp_model"], config["whispercpp_language"]] if backend_choice == "whispercpp" else None,
         "groq": config["groq_model"] if backend_choice in ("groq", "auto") else None,
         "ocr": [ocr_backend, config["ocr_lang"], config["ocr_fps"]] if ocr_backend else None,
+        "describe": [vision["url"], vision["model"]] if describe_on else None,
     })
     hit = cache.lookup(cache_root, cache_key) if cache_key and not args.refresh else None
     if hit:
@@ -304,6 +369,20 @@ def main() -> int:
     if cue_frames:
         frames = merge_frames(frames, cue_frames)
 
+    described = 0
+    if describe_problem:
+        errors.append(f"Frame descriptions unavailable: {describe_problem}")
+    elif describe_on and frames:
+        print(f"[watch] describing {min(len(frames), vision['max'])} frames with "
+              f"{describe.display_name(vision['model'])}…", file=sys.stderr)
+        try:
+            descriptions = describe.describe_frames(frames, vision)
+            for frame in frames:
+                frame["description"] = descriptions.get(frame["path"])
+            described = len(descriptions)
+        except SystemExit as exc:
+            errors.append(f"Frame descriptions unavailable: {exc}")
+
     text_events, ocr_meta = [], None
     readable = bool(video_path and meta.get("has_video") and effective_end > effective_start)
     if ocr_problem and readable:
@@ -391,6 +470,9 @@ def main() -> int:
         p(f"- **Cue frames:** {len(cue_frames)} at transcript-flagged timestamps (transcript-cue{drop_note})")
     if frames:
         p(f"- **Frame size:** max {args.resolution}px wide, max 1998px tall")
+    if described:
+        p(f"- **Frame descriptions:** {described}{f' of {len(frames)}' if described < len(frames) else ''} via "
+          f"{describe.display_name(vision['model'])} at {describe.urlparse(vision['url']).netloc}")
     lines = timeline.merge_lines(transcript_segments, [f["timestamp_seconds"] for f in frames])
     if ocr_meta:
         heard = len(text_events)

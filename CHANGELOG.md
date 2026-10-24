@@ -2,6 +2,13 @@
 
 All notable changes to `/watch` are documented here.
 
+## [0.5.0] — 2026-10-24
+
+### Added
+- **Frame descriptions.** Each selected frame can get a one-sentence description from a vision model behind any OpenAI-compatible chat API: local Ollama by default (`qwen2.5vl:3b` at `http://localhost:11434/v1`), or llama-server, LM Studio, Groq, or OpenRouter via `WATCH_DESCRIBE_URL`, `WATCH_DESCRIBE_MODEL`, and `WATCH_DESCRIBE_KEY`. Descriptions ride on `FRAME` lines, and the agent reads the timeline first and opens only the frames whose detail matters. `--describe auto|on|off` (`auto` runs only when the endpoint lists the model). At most `WATCH_DESCRIBE_MAX` (default 40) evenly spaced frames are described. Failures are partial evidence and are never cached. Tested with Qwen2.5-VL-3B through llama-server (accurate; ~26 s per frame on 4 CPU cores). SmolVLM-500M hallucinated, so ≥3B models are recommended.
+- **Gemini timeline mode.** `--gemini-mode timeline` / `WATCH_GEMINI_MODE=timeline` asks Gemini for timestamped `SCENE:` descriptions, verbatim speech with speaker labels, and on-screen `TEXT:`, rendered into the same timeline format and cached, so follow-up questions need no new upload or API call. An unreadable response falls back to Gemini's raw answer, uncached.
+- `setup.py --json` reports `describe`, `describe_url`, `describe_model`, and `describe_ready`.
+
 ## [0.4.0] — 2026-10-24
 
 ### Added
