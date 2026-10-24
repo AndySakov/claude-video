@@ -298,6 +298,18 @@ A 16×16 **RGB** thumbnail pass removes near-duplicates using mean channel diffe
 
 After reading a transcript, the agent can pin “look here” moments with `--timestamps`. These consume the frame budget first. A caption-only pass may not download a video; in that case the cue pass uses the URL again. An audio-only download cannot supply cue frames.
 
+## Live streams, cameras, and screens
+
+Ask about a live stream and watch records a window of it (60 s by default, `--window 5:00` for longer, up to 60 minutes), then watches that recording like any other video: frames, on-screen text, speech, and frame descriptions.
+
+| Source | Example |
+|---|---|
+| Live page (detected automatically) | a YouTube or Twitch live URL, or a live `.m3u8` |
+| Raw stream | `rtsp://camera.local/stream`, `rtmp://…`, `srt://…`, `udp://…` |
+| Camera or screen | `avfoundation:0` (macOS), `v4l2:/dev/video0` (Linux), `dshow:video=Integrated Camera` (Windows), `gdigrab:desktop`, `x11grab::0.0` |
+
+Recording takes as long as the window. The report's **Live capture** line gives the wall-clock start, and timeline times count from it; live streams usually run a few seconds behind real time. Rerun for the next window. Live windows are never cached and always run locally, even when a Gemini key is set. Cameras, microphones, and screens are opened only when you name the device, and your terminal may need camera or screen-recording permission (macOS: System Settings → Privacy & Security).
+
 ## The timeline and its cache
 
 The local engine's report is one chronological timeline: `FRAME` markers interleaved with speech merged into sentence-sized lines, so what was said sits directly under what was on screen. Chapters and a short description are included when the source has them.

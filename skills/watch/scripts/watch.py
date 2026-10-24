@@ -27,6 +27,7 @@ import cache  # noqa: E402
 import timeline  # noqa: E402
 import ocr  # noqa: E402
 import describe  # noqa: E402
+import live  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
 from runtime import configure_stdio  # noqa: E402
 
@@ -157,7 +158,7 @@ def main() -> int:
         prog="watch",
         description="Download a video, extract auto-scaled frames, and surface the transcript.",
     )
-    ap.add_argument("source", help="Video URL or local file path")
+    ap.add_argument("source", help="Video URL, local file path, live stream URL, or capture device (e.g. avfoundation:0)")
     ap.add_argument("--max-frames", type=int, default=None, help="Override frame cap")
     ap.add_argument("--resolution", type=int, default=512, help="Frame width in pixels (default 512)")
     ap.add_argument("--fps", type=float, default=None, help="Override auto-fps")
@@ -214,6 +215,12 @@ def main() -> int:
     ap.add_argument("--describe", choices=list(describe.CHOICES), default=None,
                     help="Describe each frame with a vision model at WATCH_DESCRIBE_URL (default local Ollama): "
                          "auto (only when the endpoint has the model), on, or off.")
+    ap.add_argument("--live", action="store_true",
+                    help="Record a window of a live feed (a live page, rtsp/rtmp/srt/udp stream, or a capture "
+                         "device such as avfoundation:0) and watch that. Live pages are detected automatically.")
+    ap.add_argument("--window", type=str, default=None,
+                    help=f"Live window length (SS, MM:SS, or HH:MM:SS; default {live.DEFAULT_WINDOW:.0f} s, "
+                         f"at most {live.MAX_WINDOW / 60:.0f} min). Rerun for the next window.")
     ap.add_argument("--no-cache", action="store_true",
                     help="Neither reuse nor save a cached timeline for this run.")
     ap.add_argument("--refresh", action="store_true",
@@ -221,6 +228,15 @@ def main() -> int:
     args = ap.parse_args()
     if args.no_whisper and args.whisper:
         ap.error("--no-whisper conflicts with --whisper")
+    live_kind = live.kind(args.source)
+    live_mode = args.live or live_kind in ("device", "stream")
+    if args.live and live_kind is None:
+        ap.error("--live needs a stream URL or a capture device such as avfoundation:0, not a local file")
+    if live_mode and (args.start or args.end):
+        ap.error("--start/--end do not apply to a live feed; use --window for its length")
+    if args.window is not None and live_kind is None:
+        ap.error("--window applies to live feeds only")
+    window = live.window_seconds(parse_time(args.window) if args.window is not None else None)
 
     config = get_config(backend_override="none" if args.no_whisper else args.whisper)
     detail = args.detail or config["detail"]
@@ -236,7 +252,10 @@ def main() -> int:
     auth = {"cookies_file": cookies_file, "cookies_from_browser": cookies_browser}
 
     gemini_key = load_gemini_key()
-    if resolve_engine(args.engine or config["engine"], bool(gemini_key)) == "gemini":
+    engine_choice = args.engine or config["engine"]
+    if live_mode and engine_choice == "gemini":
+        raise SystemExit("Live feeds are recorded and watched on this machine; rerun with --engine local.")
+    if not live_mode and resolve_engine(engine_choice, bool(gemini_key)) == "gemini":
         return run_gemini(args, config, gemini_key, start_sec, end_sec, auth)
 
     sub_lang = args.sub_lang or config["sub_lang"]
@@ -244,7 +263,8 @@ def main() -> int:
     ocr_backend, ocr_problem = ocr.resolve(ocr_choice)
     vision = describe.settings({**config, "describe": args.describe or config["describe"]})
     describe_on, describe_problem = describe.resolve(vision) if detail != "transcript" else (False, None)
-    cache_root = None if args.no_cache else cache.resolve_root(config["cache_dir"])
+    # A live feed shows something new every run, so its windows are never cached.
+    cache_root = None if args.no_cache or live_mode else cache.resolve_root(config["cache_dir"])
     # Every option that changes the evidence is part of the key; --question is not (unused locally).
     cache_key = cache_root and cache.run_key(args.source, {
         "timeline": timeline.VERSION, "detail": detail, "max_frames": max_frames, "resolution": args.resolution,
@@ -292,8 +312,9 @@ def main() -> int:
     video_path = None
     visual_error = None
     gaps = []
+    recording = None
 
-    if url_source:
+    if url_source and not live_mode:
         print("[watch] checking metadata/captions via yt-dlp…", file=sys.stderr)
         dl = fetch_captions(args.source, work / "download", sub_lang=sub_lang, **auth)
         errors.extend(dl.get("errors", []))
@@ -307,12 +328,32 @@ def main() -> int:
             except (OSError, ValueError) as exc:
                 errors.append(f"Caption parsing failed: {exc}")
         stage("metadata")
+        if (dl.get("info") or {}).get("is_live"):
+            print("[watch] this URL is live: recording a window instead of downloading", file=sys.stderr)
+            live_mode, cache_key = True, None
+            all_segments, track_available, transcript_source = [], False, None
+    if live_mode:
+        try:
+            resolved = None
+            if live_kind == "url":
+                print("[watch] resolving the live stream via yt-dlp…", file=sys.stderr)
+                resolved = live.resolve_url(args.source, auth_args(cookies_file, cookies_browser))
+                if not resolved["live"]:
+                    raise SystemExit("This URL is not live right now; omit --live to watch the recording.")
+                dl["info"] = resolved["info"]
+            print(f"[watch] recording {window:.0f} s of the live feed…", file=sys.stderr)
+            recording = live.capture(args.source, work / "live", window, resolved)
+            video_path = recording["video_path"]
+        except SystemExit as exc:
+            visual_error = f"Live capture unavailable: {exc}"
+            errors.append(visual_error)
+        stage("live capture")
 
     text_only = detail == "transcript" and not cue_timestamps
     # Without captions, burned-in text may be the only words on screen: fetch pixels for OCR.
     audio_only = text_only and not (ocr_backend and not track_available)
     # Captions are assessed before range filtering: a quiet interval is not a missing track.
-    need_media = not (audio_only and (track_available or backend_choice == "none") and url_source)
+    need_media = not live_mode and not (audio_only and (track_available or backend_choice == "none") and url_source)
     if need_media:
         try:
             print("[watch] downloading media…" if url_source else "[watch] using local file…", file=sys.stderr)
@@ -457,6 +498,10 @@ def main() -> int:
     p("# watch: video report")
     p("")
     p(f"- **Source:** {args.source}")
+    if recording:
+        p(f"- **Live capture:** {full_duration:.0f} s, recording started {recording['started']}; timeline times "
+          "count from the start of this window, and live streams run a few seconds or more behind real time. "
+          "Rerun for the next window.")
     if visual_error:
         p(f"- **Visual status:** {visual_error}")
     if errors:
