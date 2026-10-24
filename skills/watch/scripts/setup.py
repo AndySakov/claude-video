@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Base preflight, backend configuration, and an opt-in managed WhisperX install."""
+"""Base preflight, backend configuration, and opt-in local speech installs."""
 from __future__ import annotations
 
 import argparse
@@ -29,7 +29,7 @@ REQUIRED_BINARIES = ['ffmpeg', 'ffprobe', 'yt-dlp']
 WHISPERX_VERSION = '3.8.6'
 _PERM_WARNED: set[str] = set()
 ENV_TEMPLATE = '''# /watch configuration. No shell interpolation; last assignment wins.
-# Native captions always come first. Optional fallback: auto|whisperx|groq|openai|none.
+# Native captions always come first. Optional fallback: auto|whispercpp|sherpa|whisperx|groq|openai|none.
 # auto preserves the Groq-then-OpenAI preference for existing installations.
 # The first-run skill wizard sets WATCH_DETAIL and WATCH_WHISPER_BACKEND.
 # WATCH_ENGINE=auto|gemini|local. auto uses Gemini when GEMINI_API_KEY is set.
@@ -171,7 +171,14 @@ def _status(detailed=False):
                                          str(local_whispercpp.model_path(cpp_cfg)))
     except ConfigError:
         cpp_ready, cpp_bin, cpp_model = False, None, None
-    backend_ready = cpp_ready if chosen == 'whispercpp' else local_ready if chosen == 'whisperx' else (bool(load_api_key(backend)[1]) if backend in ('groq', 'openai') else chosen == 'none')
+    import local_sherpa
+    try:
+        sherpa_cfg = local_sherpa.settings(cfg)
+        sherpa_ready, sherpa_model, sherpa_speakers = (local_sherpa.ready(sherpa_cfg), sherpa_cfg['sherpa_model'],
+                                                       sherpa_cfg['sherpa_speakers'])
+    except ConfigError:
+        sherpa_ready, sherpa_model, sherpa_speakers = False, None, None
+    backend_ready = cpp_ready if chosen == 'whispercpp' else sherpa_ready if chosen == 'sherpa' else local_ready if chosen == 'whisperx' else (bool(load_api_key(backend)[1]) if backend in ('groq', 'openai') else chosen == 'none')
     blocked = bool(missing) and binaries_required
     result = {'status': 'needs_install' if blocked else 'ready', 'can_proceed': not blocked,
               'engine': engine, 'configured_engine': cfg['engine'], 'gemini_key_present': gemini_key,
@@ -183,6 +190,7 @@ def _status(detailed=False):
               'whisperx_model': cfg['whisperx_model'], 'config_file': str(CONFIG_FILE),
               'whispercpp_ready': cpp_ready, 'whispercpp_bin': str(cpp_bin) if cpp_bin else None,
               'whispercpp_model': cpp_model,
+              'sherpa_ready': sherpa_ready, 'sherpa_model': sherpa_model, 'sherpa_speakers': sherpa_speakers,
               'watch_detail': cfg['detail'], 'platform': platform.system()}
     vision = describe.settings(cfg)
     probe = {**vision, 'choice': 'on'}  # Detailed mode only: a quick local probe, like the other readiness checks.
@@ -254,6 +262,8 @@ def cmd_install(backend=None, detail=None, engine=None):
         return install_whisperx()
     if backend == 'whispercpp':
         return install_whispercpp()
+    if backend == 'sherpa':
+        return install_sherpa()
     if backend:
         write_settings({'WATCH_WHISPER_BACKEND': backend}, CONFIG_FILE)
         if backend in ('groq', 'openai') and not load_api_key(backend)[1]:
@@ -325,6 +335,54 @@ def install_whispercpp():
     return 0
 
 
+def install_sherpa():
+    """A ~45 MB venv with the sherpa-onnx wheels (no torch or numpy) + pinned model files."""
+    import local_sherpa as sherpa
+    cfg = sherpa.settings()
+    if not _which('ffmpeg'):
+        raise SystemExit('Install FFmpeg first, then rerun setup.py --backend sherpa.')
+    _scaffold_env()
+    model = sherpa.MODELS[cfg['sherpa_model']]
+    total = sum(size for *_, size, _, _ in sherpa.required_files(cfg)) >> 20
+    print(f"[setup] sherpa-onnx {cfg['sherpa_model']} ({model['languages']}): about 45 MB of packages and "
+          f'{total} MB of model files, downloaded once.', file=sys.stderr, flush=True)
+    venv = sherpa.venv_dir()
+    python = sherpa.venv_python(venv)
+    sentinel = sherpa.sentinel_for(python)
+    if not (sentinel.is_file() and python.is_file() and sentinel.read_text(encoding='utf-8').strip() == sherpa.SHERPA_VERSION):
+        if venv.is_symlink():
+            raise SystemExit('Managed sherpa-onnx venv is a symlink; choose a regular managed directory before installing.')
+        if venv.exists():
+            shutil.rmtree(venv)  # Only this fixed, installer-owned environment.
+        venv.parent.mkdir(parents=True, exist_ok=True)
+        package = f'sherpa-onnx=={sherpa.SHERPA_VERSION}'
+        uv = _which('uv')
+        if uv:  # Already installed: fast, and picks a supported Python itself.
+            _install_step([uv, 'venv', str(venv), '--python', '3.12'], 'Create sherpa-onnx Python environment')
+            _install_step([uv, 'pip', 'install', '--python', str(python), package], 'Install sherpa-onnx')
+        else:  # No new tools: the standard-library venv of the Python running setup.
+            _install_step([sys.executable, '-m', 'venv', str(venv)], 'Create sherpa-onnx Python environment')
+            _install_step([str(python), '-m', 'pip', 'install', '--quiet', package], 'Install sherpa-onnx')
+    # Invalidate before warm-up: an interrupted repair is always safe to rerun.
+    sentinel.unlink(missing_ok=True)
+    count = sherpa.download_models(cfg)
+    if count:
+        print(f'[setup] Downloaded {count} sherpa-onnx model file(s) into {sherpa.models_dir()}.', file=sys.stderr)
+    cfg['sherpa_python'] = str(python)
+    with tempfile.TemporaryDirectory(prefix='watch-warmup-') as temporary:
+        audio = Path(temporary) / 'silence.mp4'
+        _install_step(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i',
+                       'anullsrc=r=16000:cl=mono', '-t', '2', str(audio)], 'Create warm-up audio')
+        sherpa.transcribe_media(str(audio), Path(temporary), cfg, require_ready=False, check=True)
+    sentinel.write_text(sherpa.SHERPA_VERSION + '\n', encoding='utf-8')
+    write_settings({'WATCH_WHISPER_BACKEND': 'sherpa', 'WATCH_SHERPA_PYTHON': str(python),
+                    'WATCH_SHERPA_MODEL': cfg['sherpa_model'], 'SETUP_COMPLETE': 'true'}, CONFIG_FILE)
+    labels = 'off' if cfg['sherpa_speakers'] == 'off' else 'on'
+    print(f"[setup] sherpa-onnx is ready (model {cfg['sherpa_model']}, speaker labels {labels}). "
+          'Audio stays on this machine.', file=sys.stderr)
+    return 0
+
+
 def install_whisperx():
     from local_whisperx import settings, transcribe_audio
     print('[setup] Local WhisperX: requires 3 GB free disk, 8 GB RAM, a 64-bit CPU, and network access for setup. '
@@ -380,7 +438,7 @@ def main():
     mode.add_argument('--check', action='store_true')
     mode.add_argument('--json', action='store_true')
     mode.add_argument('--install-whisperx', action='store_true')
-    parser.add_argument('--backend', choices=['auto', 'whispercpp', 'whisperx', 'groq', 'openai', 'none'])
+    parser.add_argument('--backend', choices=['auto', 'whispercpp', 'sherpa', 'whisperx', 'groq', 'openai', 'none'])
     parser.add_argument('--detail', choices=sorted(DETAILS))
     parser.add_argument('--engine', choices=sorted(ENGINES))
     args = parser.parse_args()

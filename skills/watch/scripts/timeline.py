@@ -11,7 +11,7 @@ import json
 import re
 from pathlib import Path
 
-VERSION = 3
+VERSION = 4
 # Merged-line bounds: long enough to carry a sentence, short enough to cite precisely.
 MAX_LINE_WORDS = 40
 MAX_LINE_SECONDS = 20.0
@@ -34,8 +34,8 @@ def merge_lines(segments: list[dict], breaks: list[float] = ()) -> list[dict]:
     """Join caption/ASR fragments into sentence-sized lines.
 
     A line ends at sentence punctuation (once it has a few words), a pause, a size
-    bound, a YouTube ``>>`` speaker change, or a frame boundary in ``breaks`` so
-    every FRAME marker lands between lines rather than inside one.
+    bound, a speaker change (YouTube ``>>`` or a diarization label), or a frame
+    boundary in ``breaks`` so every FRAME marker lands between lines rather than inside one.
     """
     cuts = sorted(set(breaks))
     lines: list[dict] = []
@@ -48,13 +48,15 @@ def merge_lines(segments: list[dict], breaks: list[float] = ()) -> list[dict]:
             words = len(current['text'].split())
             crossed = any(current['start'] < cut <= seg['start'] for cut in cuts)
             if (crossed or seg['start'] - current['end'] > PAUSE_SECONDS or text.startswith('>>')
+                    or seg.get('speaker') != current.get('speaker')
                     or words + len(text.split()) > MAX_LINE_WORDS
                     or seg['end'] - current['start'] > MAX_LINE_SECONDS
                     or (SENTENCE_END.search(current['text']) and words >= MIN_SENTENCE_WORDS)):
                 lines.append(current)
                 current = None
         if current is None:
-            current = {'start': seg['start'], 'end': seg['end'], 'text': text}
+            current = {'start': seg['start'], 'end': seg['end'], 'text': text,
+                       **({'speaker': seg['speaker']} if seg.get('speaker') else {})}
         else:
             current['text'] += ' ' + text
             current['end'] = max(current['end'], seg['end'])
@@ -99,7 +101,8 @@ def build(*, frames: list[dict], lines: list[dict], text: list[dict] = (), scene
         'frames': [{'file': Path(f['path']).name, 't': round(f['timestamp_seconds'], 3),
                     'reason': f.get('reason', 'selected'),
                     **({'desc': f['description']} if f.get('description') else {})} for f in frames],
-        'lines': [{'start': round(l['start'], 3), 'end': round(l['end'], 3), 'text': l['text']} for l in lines],
+        'lines': [{'start': round(l['start'], 3), 'end': round(l['end'], 3), 'text': l['text'],
+                   **({'speaker': l['speaker']} if l.get('speaker') else {})} for l in lines],
         'text': [{'start': round(e['start'], 3), 'end': round(e['end'], 3), 'text': e['text'],
                   'kind': e.get('kind', 'text')} for e in text],
         'scenes': [{'t': round(s['t'], 3), 'desc': s['description']} for s in scenes],
@@ -121,7 +124,8 @@ def events(data: dict) -> list[str]:
         else:
             shown.setdefault(item['start'], []).append(item['text'])
     rows += [(t, 1, f"[{clock(t)}] TEXT: {' / '.join(texts)}") for t, texts in shown.items()]
-    rows += [(l['start'], 3, f"[{clock(l['start'])}] {l['text']}") for l in data['lines']]
+    rows += [(l['start'], 3, f"[{clock(l['start'])}] " + (f"{l['speaker']}: " if l.get('speaker') else '') + l['text'])
+             for l in data['lines']]
     return [row for _, _, row in sorted(rows, key=lambda r: (r[0], r[1]))]
 
 
@@ -160,6 +164,10 @@ def render_sections(data: dict, frames_dir: Path | None) -> str:
         out.append('')
     if data['frames'] or data.get('text') or data.get('scenes'):
         out.append('`[MM:SS]` is absolute source time. Lines without a tag are speech.')
+        out.append('')
+    if any(l.get('speaker') for l in data['lines']):
+        out.append('`SPK1:`, `SPK2:` … mark speaker turns told apart by voice on this machine, numbered in order of '
+                   'first appearance. They are not names; infer who is who from context.')
         out.append('')
     if data['speech_source']:
         out.append(f"_Speech: {data['speech_source']}._")

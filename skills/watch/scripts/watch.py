@@ -185,7 +185,7 @@ def main() -> int:
     )
     ap.add_argument(
         "--whisper",
-        choices=["groq", "openai", "whispercpp", "whisperx"],
+        choices=["groq", "openai", "whispercpp", "sherpa", "whisperx"],
         default=None,
         help="Select the fallback backend for this run; native captions still come first.",
     )
@@ -251,6 +251,7 @@ def main() -> int:
         "dedup": not args.no_dedup, "sub_lang": sub_lang, "backend": backend_choice,
         "whisperx": [config["whisperx_model"], config["whisperx_language"]] if backend_choice == "whisperx" else None,
         "whispercpp": [config["whispercpp_model"], config["whispercpp_language"]] if backend_choice == "whispercpp" else None,
+        "sherpa": [config["sherpa_model"], config["sherpa_speakers"]] if backend_choice == "sherpa" else None,
         "groq": config["groq_model"] if backend_choice in ("groq", "auto") else None,
         "ocr": [ocr_backend, config["ocr_lang"], config["ocr_fps"]] if ocr_backend else None,
         "describe": [vision["url"], vision["model"]] if describe_on else None,
@@ -398,7 +399,7 @@ def main() -> int:
 
     transcript_state = "missing"
     if not track_available and backend_choice != "none" and video_path and meta.get("has_audio"):
-        local = backend_choice in ("whisperx", "whispercpp")  # On-device: no key.
+        local = backend_choice in ("whisperx", "whispercpp", "sherpa")  # On-device: no key.
         backend, api_key = (backend_choice, None) if local else load_api_key(None if backend_choice == "auto" else backend_choice)
         if backend:
             try:
@@ -413,6 +414,9 @@ def main() -> int:
                     detected = getattr(all_segments, "language", None)
                     language = config["whispercpp_language"] if config["whispercpp_language"] != "auto" else f"{detected or 'unknown'} (detected)"
                     transcript_source = f"whisper (whisper.cpp {Path(config['whispercpp_model']).stem.removeprefix('ggml-')}, language {language})"
+                elif used_backend == "sherpa":
+                    import local_sherpa
+                    transcript_source = local_sherpa.describe_source(local_sherpa.settings(config), all_segments)
                 else:
                     transcript_source = f"whisper ({used_backend})"
             except SystemExit as exc:

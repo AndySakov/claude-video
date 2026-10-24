@@ -363,6 +363,11 @@ def transcribe_video(
             raise SystemExit("whisper.cpp does not accept an API key.")
         from local_whispercpp import transcribe_media
         return transcribe_media(video_path, audio_out.parent), "whispercpp"
+    if backend == "sherpa":
+        if api_key is not None:
+            raise SystemExit("sherpa-onnx does not accept an API key.")
+        from local_sherpa import transcribe_media as sherpa_media
+        return sherpa_media(video_path, audio_out.parent), "sherpa"
     if backend == "whisperx":
         if api_key is not None:
             raise SystemExit("WhisperX does not accept an API key.")
@@ -423,7 +428,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Transcribe local media with the selected Whisper backend.")
     parser.add_argument("video")
     parser.add_argument("audio_out", nargs="?", default="audio.mp3", type=Path)
-    parser.add_argument("--backend", choices=["groq", "openai", "whispercpp", "whisperx"])
+    parser.add_argument("--backend", choices=["groq", "openai", "whispercpp", "sherpa", "whisperx"])
     args = parser.parse_args()
     try:
         segments, backend = transcribe_video(args.video, Path(args.audio_out), backend=args.backend)
