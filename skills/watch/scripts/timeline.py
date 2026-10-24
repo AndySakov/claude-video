@@ -86,7 +86,8 @@ def short_description(text) -> str | None:
     return text or None
 
 
-def build(*, frames: list[dict], lines: list[dict], text: list[dict] = (), chapters: list[dict] | None = None,
+def build(*, frames: list[dict], lines: list[dict], text: list[dict] = (), scenes: list[dict] = (),
+          chapters: list[dict] | None = None,
           description: str | None = None, header: dict | None = None,
           speech_source: str | None = None) -> dict:
     return {
@@ -101,6 +102,7 @@ def build(*, frames: list[dict], lines: list[dict], text: list[dict] = (), chapt
         'lines': [{'start': round(l['start'], 3), 'end': round(l['end'], 3), 'text': l['text']} for l in lines],
         'text': [{'start': round(e['start'], 3), 'end': round(e['end'], 3), 'text': e['text'],
                   'kind': e.get('kind', 'text')} for e in text],
+        'scenes': [{'t': round(s['t'], 3), 'desc': s['description']} for s in scenes],
     }
 
 
@@ -111,6 +113,7 @@ def events(data: dict) -> list[str]:
     """
     rows = [(f['t'], 0, f"[{clock(f['t'])}] FRAME {f['file']} ({f['reason']})" + (f": {f['desc']}" if f.get('desc') else ''))
             for f in data['frames']]
+    rows += [(s['t'], 0, f"[{clock(s['t'])}] SCENE: {s['desc']}") for s in data.get('scenes', [])]
     shown: dict[float, list[str]] = {}
     for item in data.get('text', []):
         if item.get('kind') == 'caption':
@@ -151,7 +154,11 @@ def render_sections(data: dict, frames_dir: Path | None) -> str:
                    'spoken words). `TEXT:` lines are other on-screen text (slides, UI, overlays) when it appears; '
                    '`/` separates lines shown together. OCR can misread stylized text.')
         out.append('')
-    if data['frames'] or data.get('text'):
+    if data.get('scenes'):
+        out.append("`SCENE:` lines are the remote model's description of what is on screen; there are no frame files. "
+                   'Rerun with `--engine local` when exact pixels matter.')
+        out.append('')
+    if data['frames'] or data.get('text') or data.get('scenes'):
         out.append('`[MM:SS]` is absolute source time. Lines without a tag are speech.')
         out.append('')
     if data['speech_source']:

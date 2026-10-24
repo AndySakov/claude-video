@@ -295,6 +295,16 @@ The local engine's report is one chronological timeline: `FRAME` markers interle
 
 `CAPTION:` lines are burned-in captions merged into phrases; `TEXT:` lines are other on-screen text — slides, UI, code. Both are read by local OCR (up to 3 samples per second on short clips) and reported once, when they appear. They matter most on Reels, TikTok, and Shorts, where burned-in captions are often the only transcript. OCR is optional and never blocks a run: install [Tesseract](https://tesseract-ocr.github.io/tessdoc/Installation.html) (`brew install tesseract`, `sudo apt install tesseract-ocr`, or `winget install UB-Mannheim.TesseractOCR`), or on macOS let watch use Apple's built-in Vision OCR (needs `xcode-select --install`). Choose with `--ocr auto|tesseract|vision|none` or `WATCH_OCR`; `WATCH_OCR_LANG=eng+spa` adds Tesseract languages.
 
+**Frame descriptions** let the agent read what each frame shows instead of opening every image:
+
+```text
+[00:14] FRAME frame_0003.jpg (scene-change): A man in a white shirt sits at a desk with a microphone.
+```
+
+They come from any vision model behind an OpenAI-compatible API. The default is free and local: install [Ollama](https://ollama.com) and run `ollama pull qwen2.5vl:3b` (about 3 GB). Point `WATCH_DESCRIBE_URL` at llama-server, LM Studio, or a cloud API (Groq, OpenRouter, with `WATCH_DESCRIBE_KEY`) to use those instead. Models under ~3B parameters hallucinate; on a CPU, a 3B model takes about 25 s per frame, so at most `WATCH_DESCRIBE_MAX` (default 40) frames are described per run. Apple Silicon or a GPU is much faster. `--describe off` skips it.
+
+With the Gemini engine, `--gemini-mode timeline` returns the same kind of timeline from Google's model (scenes, verbatim speech, on-screen text) and caches it, so follow-up questions are free.
+
 Each run writes `timeline.md` and a machine-readable `timeline.json`. Complete runs are cached in `~/.cache/watch/timelines` (the 50 most recently used), keyed by the source and every option that changes the evidence. Asking again with the same options reuses the saved timeline and frames without downloading or transcribing. Use `--refresh` to rebuild, `--no-cache` for a one-off run, or set `WATCH_CACHE_DIR` to move the cache (`off` disables it). Only text and the selected frames are cached, never media or audio.
 
 ## Captions, authentication, and partial results

@@ -15,6 +15,7 @@ from pathlib import Path
 from config import (CONFIG_DIR, CONFIG_FILE, ConfigError, DETAILS, ENGINES, get_config,
                     load_api_key, load_gemini_key, read_env_file, resolve_engine, write_settings)
 from runtime import configure_stdio, diagnostic, run_text
+import describe
 import ocr
 
 # Optional: on-screen text (burned-in captions, slides). Never blocks setup.
@@ -183,6 +184,11 @@ def _status(detailed=False):
               'whispercpp_ready': cpp_ready, 'whispercpp_bin': str(cpp_bin) if cpp_bin else None,
               'whispercpp_model': cpp_model,
               'watch_detail': cfg['detail'], 'platform': platform.system()}
+    vision = describe.settings(cfg)
+    probe = {**vision, 'choice': 'on'}  # Detailed mode only: a quick local probe, like the other readiness checks.
+    describe_ready = describe.resolve(probe)[0] if vision['choice'] != 'off' and detailed else None
+    result.update(describe=vision['choice'], describe_url=vision['url'], describe_ready=describe_ready,
+                  describe_model=describe.display_name(probe['model']))
     ocr_backend, ocr_problem = ocr.resolve(cfg['ocr'])
     result.update(ocr_backend=ocr_backend, configured_ocr=cfg['ocr'], ocr_problem=ocr_problem,
                   ocr_hint=None if ocr_backend else OCR_HINTS.get(platform.system(), OCR_HINTS['Linux']))

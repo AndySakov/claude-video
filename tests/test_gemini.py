@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import json
+import sys
 from urllib.error import HTTPError, URLError
 
 import pytest
@@ -217,3 +218,61 @@ def test_invalid_key_reported_as_http_400_is_still_auth(calls):
     calls.replies = [http_error(400, b'{"error":{"code":400,"message":"API key not valid. Please pass a valid API key.","status":"INVALID_ARGUMENT"}}')]
     with pytest.raises(SystemExit, match='^Gemini auth:'):
         gemini.ask({'uri': 'https://youtu.be/abc'}, None, model='m', key=KEY)
+
+
+TIMELINE_JSON = '''Here is the timeline:
+```json
+{"scenes": [{"t": "00:00", "description": "A man at a desk with a microphone."},
+            {"t": "0:12", "description": "A slide reading Q3 Revenue."}],
+ "speech": [{"t": "00:01", "speaker": "Host", "text": "Never open a cold call like this."},
+            {"t": "00:05", "text": "Open with their world."},
+            {"t": "nonsense", "text": "dropped"}],
+ "on_screen_text": [{"t": "00:12", "text": "Q3 Revenue"}]}
+```'''
+
+
+def test_parse_timeline_reads_fenced_json_and_skips_bad_times():
+    parsed = gemini.parse_timeline(TIMELINE_JSON)
+    assert [s['t'] for s in parsed['scenes']] == [0, 12]
+    assert parsed['speech'] == [{'t': 1, 'text': 'Never open a cold call like this.', 'speaker': 'Host'},
+                                {'t': 5, 'text': 'Open with their world.'}]
+    assert parsed['text'] == [{'t': 12, 'text': 'Q3 Revenue'}]
+
+
+@pytest.mark.parametrize('text', ['no json here', '{"scenes": []}', '{"speech": [{"t": "x", "text": "y"}]}'])
+def test_parse_timeline_rejects_empty_or_unreadable(text):
+    with pytest.raises(ValueError):
+        gemini.parse_timeline(text)
+
+
+def test_timeline_mode_renders_caches_and_reuses(monkeypatch, capsys):
+    import watch
+    calls = []
+    def fake_ask(video, question, **kw):
+        calls.append(kw.get('prompt'))
+        return {'text': TIMELINE_JSON, 'model': kw['model'], 'processing': 'agentic', 'total_tokens': 900}
+    monkeypatch.setattr(gemini, 'ask', fake_ask)
+    monkeypatch.setenv('GEMINI_API_KEY', 'unit-key')
+    monkeypatch.setattr(sys, 'argv', ['watch', 'https://youtu.be/abc', '--gemini-mode', 'timeline'])
+    assert watch.main() == 0
+    out = capsys.readouterr().out
+    assert calls == [gemini.TIMELINE_PROMPT]
+    assert '[00:00] SCENE: A man at a desk with a microphone.' in out
+    assert '[00:01] Host: Never open a cold call like this.' in out and '[00:12] TEXT: Q3 Revenue' in out
+    assert '(agentic, timeline)' in out and 'cached; reruns reuse it' in out and 'unit-key' not in out
+    assert watch.main() == 0
+    assert len(calls) == 1 and 'reused without contacting Google' in capsys.readouterr().out
+
+
+def test_unreadable_timeline_falls_back_to_the_raw_answer_uncached(monkeypatch, capsys):
+    import watch
+    monkeypatch.setattr(gemini, 'ask', lambda video, question, **kw: {
+        'text': 'Sorry, here is a summary instead.', 'model': kw['model'], 'processing': 'agentic', 'total_tokens': None})
+    monkeypatch.setenv('GEMINI_API_KEY', 'unit-key')
+    monkeypatch.setenv('WATCH_GEMINI_MODE', 'timeline')
+    monkeypatch.setattr(sys, 'argv', ['watch', 'https://youtu.be/abc'])
+    assert watch.main() == 0
+    out = capsys.readouterr().out
+    assert 'timeline was unreadable' in out and 'Sorry, here is a summary instead.' in out
+    assert watch.main() == 0
+    assert 'reused' not in capsys.readouterr().out
