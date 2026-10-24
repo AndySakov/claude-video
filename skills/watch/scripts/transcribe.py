@@ -43,7 +43,11 @@ def normalize_segments(data: object) -> Segments:
                 or start < previous or not isinstance(text, str) or not text.strip()):
             raise ValueError('invalid segment timestamps or text')
         previous = start
-        out.append({'start': round(start, 6), 'end': round(end, 6), 'text': text.strip()})
+        item = {'start': round(start, 6), 'end': round(end, 6), 'text': text.strip()}
+        speaker = segment.get('speaker')
+        if isinstance(speaker, str) and re.fullmatch(r'SPK\d{1,2}', speaker):
+            item['speaker'] = speaker  # Local diarization label, numbered by first appearance.
+        out.append(item)
     out.no_speech = not out
     return out
 

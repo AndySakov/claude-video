@@ -204,12 +204,13 @@ The first-run wizard asks for your detail preference and fallback backend. Start
 | Backend | Requirements and behavior |
 |---|---|
 | `whispercpp` | Recommended. Local [whisper.cpp](https://github.com/ggml-org/whisper.cpp): one native binary plus a model file, no API key, no Python packages; audio stays on the machine. |
+| `sherpa` | Local [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) with NVIDIA Parakeet: about twice as fast as whisper.cpp `small` on a CPU, punctuated sentence timestamps, and **speaker labels** (`SPK1:`, `SPK2:`). A ~45 MB Python environment (no torch) plus ~715 MB of pinned models; 25 European languages. |
 | `groq` | Cloud `whisper-large-v3-turbo` (cheapest cloud option; `WATCH_GROQ_MODEL` selects another); needs `GROQ_API_KEY` from [Groq](https://console.groq.com/keys). |
 | `whisperx` | Heavier local option; the skill manages a separate Python 3.12 environment and downloads its models. |
 | `openai` | Cloud `whisper-1`; needs `OPENAI_API_KEY` from [OpenAI](https://platform.openai.com/api-keys). |
 | `none` | Captions only. Local files and captionless URLs can still provide visual evidence. |
 
-Existing 0.2.0 users retain `auto`: Groq key first, then OpenAI. No automatic migration to local inference. Explicit `--whisper groq|openai|whispercpp|whisperx` overrides this run's fallback, while `--no-whisper` disables all fallbacks and still permits native captions. Those two flags conflict.
+Existing 0.2.0 users retain `auto`: Groq key first, then OpenAI. No automatic migration to local inference. Explicit `--whisper groq|openai|whispercpp|sherpa|whisperx` overrides this run's fallback, while `--no-whisper` disables all fallbacks and still permits native captions. Those two flags conflict.
 
 Settings live in `~/.config/watch/.env`. Enter keys privately there or in the process environment; do not commit them or paste them into public issues. Cloud-key lookup is provider preference first, then environment → user file → cwd `.env` for each provider. Explicit providers never borrow another provider's key. Config files support UTF-8, UTF-8 BOM, and BOM-marked UTF-16; quotes, comments, and literal Windows paths work without shell expansion. Last assignment wins.
 
@@ -224,6 +225,22 @@ Have the agent run the bundled `setup.py --backend whispercpp --detail balanced`
 | Windows | Download `whisper-bin-x64.zip` from the [releases](https://github.com/ggml-org/whisper.cpp/releases) and set `WATCH_WHISPERCPP_BIN` to `whisper-cli.exe` |
 
 Setup then downloads the model once from Hugging Face into `~/.cache/watch/whisper.cpp`, transcribes two seconds of silence to confirm it works, and saves the backend. `WATCH_WHISPERCPP_MODEL` picks the model: `base` (148 MB, fastest), `small` (466 MB, default), `small.en`, or `large-v3-turbo-q5_0` (547 MB, most accurate; best on Apple Silicon). Rerun setup after changing it. `WATCH_WHISPERCPP_LANGUAGE=sw` (for example) fixes the language when auto-detection is wrong. On a 4-core Linux CPU, a 54-second clip took about 10 s with `base` and 30 s with `small`.
+
+### Local sherpa-onnx (Parakeet + speaker labels)
+
+Have the agent run the bundled `setup.py --backend sherpa --detail balanced`. It creates `~/.cache/watch/sherpa-venv` with the `sherpa-onnx` wheels (about 45 MB; no torch or numpy) using uv when it is already installed, otherwise the standard-library `venv` of the Python running setup. It then downloads the models from Hugging Face into `~/.cache/watch/sherpa-onnx`, each pinned to a repository revision and checked against its SHA-256, loads every model once, and saves the backend. Nothing is installed system-wide.
+
+| `WATCH_SHERPA_MODEL` | Size | Languages | Notes |
+|---|---|---|---|
+| `parakeet` (default) | 670 MB | 25 European languages incl. English | NVIDIA Parakeet TDT 0.6B v3; punctuated, with token timestamps |
+| `parakeet-en` | 661 MB | English | Parakeet TDT 0.6B v2 |
+| `moonshine-base` | 287 MB | English | No token timestamps, so lines are cut at pauses (≤ 8 s) |
+| `moonshine-tiny` | 124 MB | English | Fastest; noticeably less accurate |
+| `sensevoice` | 240 MB | Chinese, Cantonese, English, Japanese, Korean | |
+
+Speaker labels (`WATCH_SHERPA_SPEAKERS=auto`, the default) add about 43 MB of models (pyannote segmentation 3.0 and NVIDIA TitaNet-small) and a few seconds per minute of audio. Turns are labelled `SPK1`, `SPK2`, … in order of first appearance, and only when at least two voices are found; they are not names. Set a count (`WATCH_SHERPA_SPEAKERS=4`) when you know it, since automatic clustering can merge similar voices, or `off` to skip diarization. `WATCH_SHERPA_THREADS` (default: CPU count, at most 8) and `WATCH_SHERPA_TIMEOUT` work like the whisper.cpp settings. Rerun setup after changing the model.
+
+On a 4-core Linux CPU, the 54-second clip that whisper.cpp `small` transcribed in 26 s took 14 s with `parakeet` and 4 s with `moonshine-tiny`. Labelling a 110-second interview Reel added about 3 s and kept the creator, filmed in several rooms, as one speaker. Model licenses: Parakeet and TitaNet CC-BY-4.0, pyannote and Silero MIT, Moonshine MIT, SenseVoice the FunASR model license.
 
 ### Managed WhisperX
 
