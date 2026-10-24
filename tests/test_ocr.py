@@ -203,3 +203,17 @@ def test_misread_captions_and_short_fragments_that_were_spoken_are_dropped():
               {**ev(10, 'Stop it a', 11), 'kind': 'text'},
               {**ev(27, 'COMPETITOR INTEL CHECKLIST: locations, pricing, hiring', 30), 'kind': 'text'}]
     assert [e['text'] for e in ocr.drop_spoken(events, speech)] == ['COMPETITOR INTEL CHECKLIST: locations, pricing, hiring']
+
+
+def test_heavily_misread_reveal_prefix_still_folds_into_its_caption():
+    # Tesseract 4.1 (Ubuntu 22.04) reads the "THIS IS" reveal as "THES 1S".
+    samples = [(1, ['THES 1S']), (2, []), (3, ['THIS IS HOW YOU CLOSE']), (4, ['THIS IS HOW YOU CLOSE'])]
+    assert [(e['start'], e['text']) for e in ocr.track(samples, 1.0)] == [(1, 'THIS IS HOW YOU CLOSE')]
+
+
+def test_short_text_that_stays_on_screen_is_not_a_caption():
+    events = [ev(4, 'Q3 Revenue', 7.3), ev(4, 'Bookings up 18 percent', 7.3), ev(8, 'def handler(event):', 12),
+              ev(8, 'return book(event)', 12), ev(9, 'so open'), ev(9.5, 'with their world')]
+    out = ocr.caption_runs(events)
+    assert [(e['kind'], e['text']) for e in out if e['kind'] == 'caption'] == [('caption', 'so open with their world')]
+    assert sum(e['kind'] == 'text' for e in out) == 4
