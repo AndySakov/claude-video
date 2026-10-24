@@ -53,6 +53,9 @@ SPOKEN_OVERLAP = 0.6
 RECURRING_NOISE = 3
 VISION_SCRIPT = Path(__file__).with_name('ocr_vision.swift')
 VISION_WORKERS = 4  # Concurrent helper processes; each reads one contiguous chunk of samples.
+# The first Vision call on a machine prepares the text model for the Neural Engine. Four helpers
+# doing that at once on an M1 Pro all ran past their time limit, so one sample is read alone first.
+VISION_WARMUP_SECONDS = 600
 
 
 def resolve(choice: str) -> tuple[str | None, str | None]:
@@ -252,16 +255,20 @@ def read_vision(samples: list[dict]) -> list[list[str]]:
     if not samples:
         return []
     command = vision_command()
-    size = -(-len(samples) // VISION_WORKERS)
-    chunks = [samples[i:i + size] for i in range(0, len(samples), size)]
-    def run(chunk):
+    def run(chunk, timeout=None):
         paths = ''.join(f"{s['path']}\n" for s in chunk)
-        result = run_text(command, input=paths, timeout=60 + 3 * len(chunk))
+        result = run_text(command, input=paths, timeout=timeout or 60 + 3 * len(chunk))
         if result.returncode != 0:
             raise SystemExit(f'Apple Vision OCR failed: {diagnostic(result.stderr, 400)}')
         return result.stdout
-    with ThreadPoolExecutor(max_workers=len(chunks)) as pool:
-        outputs = list(pool.map(run, chunks))
+    # About a second when the model is ready; on a cold machine only this one helper waits for it.
+    outputs = [run(samples[:1], VISION_WARMUP_SECONDS)]
+    rest = samples[1:]
+    size = -(-len(rest) // VISION_WORKERS) if rest else 1
+    chunks = [rest[i:i + size] for i in range(0, len(rest), size)]
+    if chunks:
+        with ThreadPoolExecutor(max_workers=len(chunks)) as pool:
+            outputs += pool.map(run, chunks)
     by_path = {}
     for row in '\n'.join(outputs).splitlines():
         try:

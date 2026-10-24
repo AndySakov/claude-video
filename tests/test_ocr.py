@@ -96,10 +96,13 @@ for path in sys.stdin.read().split(chr(10)):
     monkeypatch.setattr(ocr, 'VISION_WORKERS', 3)
     calls = []
     real = ocr.run_text
-    monkeypatch.setattr(ocr, 'run_text', lambda cmd, **kw: calls.append(kw['input'].count(chr(10))) or real(cmd, **kw))
+    monkeypatch.setattr(ocr, 'run_text', lambda cmd, **kw: calls.append((kw['input'].count(chr(10)), kw['timeout'])) or real(cmd, **kw))
     samples = [{'path': str(tmp_path / f'raw_{i:04d}.jpg')} for i in range(10)]
     assert ocr.read_vision(samples) == [[f'Frame raw_{i:04d}'] for i in range(10)]
-    assert sorted(calls) == [2, 4, 4]
+    # One sample alone first, with the long warm-up limit; then the rest side by side.
+    assert calls[0] == (1, ocr.VISION_WARMUP_SECONDS) and sorted(n for n, _ in calls[1:]) == [3, 3, 3]
+    calls.clear()
+    assert ocr.read_vision(samples[:1]) == [['Frame raw_0000']] and calls == [(1, ocr.VISION_WARMUP_SECONDS)]
 
 
 def test_clean_strips_symbol_tokens_and_stray_end_characters():
