@@ -2,6 +2,11 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Changed
+- **Less OCR garbage.** An on-screen text line read with less than 0.85 confidence is kept only when a sample within two on either side reads the same line or most of the same words. Textures and handwriting (a whiteboard behind a speaker) came back as a different fragment every sample ("KALA\\ N Pw by", "Pury Concern") and ended up inside `CAPTION:` lines; real captions and slides read alike from sample to sample and usually with higher confidence. On a whiteboard talk, OCR output went from 562 to 504 words with the removed words almost all garbage; a slide-heavy Reel kept all 25 events.
+
 ## [0.6.0] — 2026-10-24
 
 ### Added
