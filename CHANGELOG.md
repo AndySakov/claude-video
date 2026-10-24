@@ -2,6 +2,11 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Changed
+- **Faint watermarks no longer leak into captions.** Apple Vision read a Reel's faint "…SITION.COM" watermark as different clipped pieces across the whole video ("ITION", "ITION.C", "SITION.CO", "ON.CC"), each too unlike the others to count as recurring noise, so they were merged into `CAPTION:` lines. A one- or two-word line now also counts as a repeat of another when it appears inside it starting mid-word, so the family is dropped. Whole words shared with other text ("label" in "label them") and different word endings ("plan" / "planning") do not count.
+
 ## [0.6.1] — 2026-10-24
 
 ### Changed

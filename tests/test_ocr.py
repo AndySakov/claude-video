@@ -122,6 +122,18 @@ def test_unconfident_lines_need_a_neighbouring_sample_to_read_them_alike():
         ['Each pillar is 1 statement'], [], [], [], []]
 
 
+def test_a_faint_watermark_read_in_clipped_pieces_is_dropped():
+    # Apple Vision on a real Reel read an "...SITION.COM" watermark as different pieces across the video.
+    def ev(t, text, seconds=0.6):
+        return {'start': t, 'end': t + seconds, 'text': text}
+    events = [ev(0.3, 'ITION C'), ev(2.0, 'ITION.C'), ev(2.2, 'sales teams'), ev(6.5, 'label them'),
+              ev(17.0, 'ITION'), ev(33.0, 'pain cycle'), ev(50.0, 'ON.CC'), ev(63.0, 'SITION.CO'),
+              ev(66.0, 'SITION.CC'), ev(78.0, 'ON.CC'), ev(89.6, 'sales teams'), ev(10.0, 'LABEL', 80),
+              ev(20.0, 'plan'), ev(30.0, 'planning'), ev(40.0, 'planner')]  # endings differ: not clipped pieces
+    assert [e['text'] for e in ocr.drop_recurring(events)] == [
+        'sales teams', 'label them', 'pain cycle', 'sales teams', 'LABEL', 'plan', 'planning', 'planner']
+
+
 def test_clean_strips_symbol_tokens_and_stray_end_characters():
     assert ocr.clean('4 Never open a call 4 ©') == 'Never open a call'
     assert ocr.clean("you've got © their full |") == "you've got their full"

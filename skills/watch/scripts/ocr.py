@@ -387,17 +387,36 @@ def absorb_reveals(events: list[dict], interval: float) -> list[dict]:
     return sorted(out, key=lambda e: e['start'])
 
 
+def _piece_of(short: str, long: str) -> bool:
+    """``short`` occurs inside ``long`` starting mid-word: a read clipped at the left.
+
+    Only the start counts: a word that ends early is usually a real plural or stem
+    ("topic" in "topics"), while "ition" in "sition co" is the same text cut off.
+    """
+    if len(short) < 4 or short == long or len(long.split()) > 2:  # Watermark pieces are a word or two.
+        return False
+    start = long.find(short)
+    while start >= 0:
+        if start > 0 and long[start - 1] != ' ':
+            return True
+        start = long.find(short, start + 1)
+    return False
+
+
 def drop_recurring(events: list[dict]) -> list[dict]:
     """Drop short lines that appear (fuzzily) as RECURRING_NOISE or more separate events.
 
     Captions rarely repeat a phrase, while stylized background text is re-read with
     varying misreads every few samples; a steady watermark is one long event and stays.
+    A faint watermark read in clipped pieces ("ITION", "SITION.CO", "ITION C") counts as
+    one recurring line; whole words shared with other text ("label" in "label them") do not.
     """
     keys = [norm(e['text']) for e in events]
     kept = []
     for event, key in zip(events, keys):
         short = len(key.split()) <= CAPTION_WORDS
-        if short and sum(similar(key, other) for other in keys) >= RECURRING_NOISE:
+        if short and sum(similar(key, other) or _piece_of(key, other) or _piece_of(other, key)
+                         for other in keys) >= RECURRING_NOISE:
             continue
         kept.append(event)
     return kept
