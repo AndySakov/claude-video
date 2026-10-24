@@ -13,6 +13,9 @@ from runtime import configure_stdio
 TIME = r'(?:[0-9]{2,}:)?[0-5][0-9]:[0-5][0-9][.,][0-9]{3}'
 TIMING_RE = re.compile(rf'^\s*({TIME})\s+-->\s+({TIME})(?:\s+.*)?$')
 TAG_RE = re.compile(r'<[^>]*>')
+# YouTube auto-captions roll: each cue repeats the previous cue's last line and is
+# followed by a ~10 ms cue that only re-displays it. Contiguity is judged with this slack.
+ROLL_SLACK = 0.05
 
 
 class Segments(list):
@@ -52,6 +55,7 @@ def _seconds(stamp: str) -> float:
 def parse_vtt(path: str) -> list[dict]:
     lines = Path(path).read_text(encoding='utf-8-sig').splitlines()
     segments = []
+    previous = None  # (end, last displayed line) of the previous cue, rolled or not
     i = 0
     while i < len(lines):
         line = lines[i]
@@ -74,7 +78,16 @@ def parse_vtt(path: str) -> list[dict]:
                 break
             payload.append(lines[i])
             i += 1
-        text = ' '.join(html.unescape(TAG_RE.sub('', part)).strip() for part in payload).strip()
+        parts = [html.unescape(TAG_RE.sub('', part)).strip() for part in payload]
+        shown = [part for part in parts if part]
+        rolled = previous and shown and shown[0] == previous[1] and start <= previous[0] + ROLL_SLACK
+        if shown:
+            previous = (end, shown[-1])
+        if rolled and (len(shown) > 1 or end - start <= ROLL_SLACK):
+            # Keep only the newly revealed line; a bare re-display carries nothing new.
+            # A lone, normal-length repeat is independent speech and is kept below.
+            parts = shown[1:]
+        text = ' '.join(parts).strip()
         if text and end >= start:
             segments.append({'start': start, 'end': end, 'text': text, '_display': display})
     return [{k: s[k] for k in ('start', 'end', 'text')} for s in _dedupe(segments)]

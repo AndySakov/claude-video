@@ -21,13 +21,17 @@ from config import ConfigError, frame_cap, get_config, load_gemini_key, resolve_
 import gemini  # noqa: E402
 from download import download, fetch_captions, is_url, auth_args  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps, validate_controls  # noqa: E402
-from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
+from transcribe import filter_range, parse_vtt  # noqa: E402
+import cache  # noqa: E402
+import timeline  # noqa: E402
+import ocr  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
 from runtime import configure_stdio  # noqa: E402
 
 
 LOCAL_ONLY_FLAGS = (("--detail", "detail"), ("--fps", "fps"), ("--max-frames", "max_frames"),
-                    ("--timestamps", "timestamps"), ("--whisper", "whisper"), ("--sub-lang", "sub_lang"))
+                    ("--timestamps", "timestamps"), ("--whisper", "whisper"), ("--sub-lang", "sub_lang"),
+                    ("--ocr", "ocr"))
 
 
 def run_gemini(args, config, key, start_sec, end_sec, auth) -> int:
@@ -125,7 +129,7 @@ def main() -> int:
     )
     ap.add_argument(
         "--whisper",
-        choices=["groq", "openai", "whisperx"],
+        choices=["groq", "openai", "whispercpp", "whisperx"],
         default=None,
         help="Select the fallback backend for this run; native captions still come first.",
     )
@@ -144,6 +148,13 @@ def main() -> int:
                          "local: frames + transcript on this machine. Default auto: gemini when a key exists.")
     ap.add_argument("--question", default=None,
                     help="The user's question. Sent to Gemini on a gemini run; unused by the local engine.")
+    ap.add_argument("--ocr", choices=list(ocr.CHOICES), default=None,
+                    help="Read on-screen text (burned-in captions, slides, UI): auto (tesseract, else Apple "
+                         "Vision on macOS, else off), tesseract, vision, or none.")
+    ap.add_argument("--no-cache", action="store_true",
+                    help="Neither reuse nor save a cached timeline for this run.")
+    ap.add_argument("--refresh", action="store_true",
+                    help="Rebuild the timeline even when a cached one exists, then replace it.")
     args = ap.parse_args()
     if args.no_whisper and args.whisper:
         ap.error("--no-whisper conflicts with --whisper")
@@ -165,6 +176,34 @@ def main() -> int:
     if resolve_engine(args.engine or config["engine"], bool(gemini_key)) == "gemini":
         return run_gemini(args, config, gemini_key, start_sec, end_sec, auth)
 
+    sub_lang = args.sub_lang or config["sub_lang"]
+    ocr_choice = args.ocr or config["ocr"]
+    ocr_backend, ocr_problem = ocr.resolve(ocr_choice)
+    cache_root = None if args.no_cache else cache.resolve_root(config["cache_dir"])
+    # Every option that changes the evidence is part of the key; --question is not (unused locally).
+    cache_key = cache_root and cache.run_key(args.source, {
+        "timeline": timeline.VERSION, "detail": detail, "max_frames": max_frames, "resolution": args.resolution,
+        "fps": args.fps, "start": start_sec, "end": end_sec, "timestamps": cue_timestamps,
+        "dedup": not args.no_dedup, "sub_lang": sub_lang, "backend": backend_choice,
+        "whisperx": [config["whisperx_model"], config["whisperx_language"]] if backend_choice == "whisperx" else None,
+        "whispercpp": [config["whispercpp_model"], config["whispercpp_language"]] if backend_choice == "whispercpp" else None,
+        "groq": config["groq_model"] if backend_choice in ("groq", "auto") else None,
+        "ocr": [ocr_backend, config["ocr_lang"], config["ocr_fps"]] if ocr_backend else None,
+    })
+    hit = cache.lookup(cache_root, cache_key) if cache_key and not args.refresh else None
+    if hit:
+        try:
+            cached = (hit / "timeline.md").read_text(encoding="utf-8")
+        except OSError:
+            hit = None  # An unreadable entry is rebuilt and replaced below.
+        else:
+            print("[watch] reusing cached timeline", file=sys.stderr)
+            print(cached)
+            print()
+            print("---")
+            print(f"_Cached timeline: `{hit}` — reused without downloading; pass `--refresh` to rebuild._")
+            return 0
+
     parent = Path(args.out_dir).expanduser().resolve() if args.out_dir else None
     if parent:
         parent.mkdir(parents=True, exist_ok=True)
@@ -182,7 +221,7 @@ def main() -> int:
 
     if url_source:
         print("[watch] checking metadata/captions via yt-dlp…", file=sys.stderr)
-        dl = fetch_captions(args.source, work / "download", sub_lang=args.sub_lang or config["sub_lang"], **auth)
+        dl = fetch_captions(args.source, work / "download", sub_lang=sub_lang, **auth)
         errors.extend(dl.get("errors", []))
         if dl.get("subtitle_path"):
             try:
@@ -194,7 +233,9 @@ def main() -> int:
             except (OSError, ValueError) as exc:
                 errors.append(f"Caption parsing failed: {exc}")
 
-    audio_only = detail == "transcript" and not cue_timestamps
+    text_only = detail == "transcript" and not cue_timestamps
+    # Without captions, burned-in text may be the only words on screen: fetch pixels for OCR.
+    audio_only = text_only and not (ocr_backend and not track_available)
     # Captions are assessed before range filtering: a quiet interval is not a missing track.
     need_media = not (audio_only and (track_available or backend_choice == "none") and url_source)
     if need_media:
@@ -263,9 +304,23 @@ def main() -> int:
     if cue_frames:
         frames = merge_frames(frames, cue_frames)
 
+    text_events, ocr_meta = [], None
+    readable = bool(video_path and meta.get("has_video") and effective_end > effective_start)
+    if ocr_problem and readable:
+        errors.append(f"On-screen text unavailable: {ocr_problem}")
+    elif ocr_backend and readable:
+        print(f"[watch] reading on-screen text ({ocr_backend})…", file=sys.stderr)
+        try:
+            text_events, ocr_meta = ocr.on_screen_text(
+                video_path, work, ocr_backend, lang=config["ocr_lang"], fps=config["ocr_fps"],
+                start=effective_start, end=effective_end)
+        except SystemExit as exc:
+            errors.append(f"On-screen text unavailable: {exc}")
+
     transcript_state = "missing"
     if not track_available and backend_choice != "none" and video_path and meta.get("has_audio"):
-        backend, api_key = ("whisperx", None) if backend_choice == "whisperx" else load_api_key(None if backend_choice == "auto" else backend_choice)
+        local = backend_choice in ("whisperx", "whispercpp")  # On-device: no key.
+        backend, api_key = (backend_choice, None) if local else load_api_key(None if backend_choice == "auto" else backend_choice)
         if backend:
             try:
                 all_segments, used_backend = transcribe_video(video_path, work / "audio.mp3", backend=backend, api_key=api_key)
@@ -275,6 +330,10 @@ def main() -> int:
                 if used_backend == "whisperx":
                     language = config["whisperx_language"] or "auto (unverified)"
                     transcript_source = f"whisper (whisperx {config['whisperx_model']}, language {language})"
+                elif used_backend == "whispercpp":
+                    detected = getattr(all_segments, "language", None)
+                    language = config["whispercpp_language"] if config["whispercpp_language"] != "auto" else f"{detected or 'unknown'} (detected)"
+                    transcript_source = f"whisper (whisper.cpp {Path(config['whispercpp_model']).stem.removeprefix('ggml-')}, language {language})"
                 else:
                     transcript_source = f"whisper ({used_backend})"
             except SystemExit as exc:
@@ -288,38 +347,33 @@ def main() -> int:
         transcript_state = "no audio stream" if not visual_error else "audio metadata unavailable"
 
     transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
-    transcript_text = format_transcript(transcript_segments)
     if track_available:
         transcript_state = "available" if transcript_segments else ("no speech in selected range" if focused and all_segments else "no speech")
     for error in errors:
         print(f"[watch] {error}", file=sys.stderr)
 
     info = dl.get("info") or {}
-
-    print()
-    print("# watch: video report")
-    print()
-    print(f"- **Source:** {args.source}")
-    if video_path:
-        print(f"- **Local media:** `{video_path}`")
+    head = []
+    p = head.append
+    p("# watch: video report")
+    p("")
+    p(f"- **Source:** {args.source}")
     if visual_error:
-        print(f"- **Visual status:** {visual_error}")
+        p(f"- **Visual status:** {visual_error}")
     if errors:
-        print("- **Result:** partial evidence" if frames or transcript_segments else "- **Result:** unavailable evidence")
+        p("- **Result:** partial evidence" if frames or transcript_segments else "- **Result:** unavailable evidence")
     if info.get("title"):
-        print(f"- **Title:** {info['title']}")
+        p(f"- **Title:** {info['title']}")
     if info.get("uploader"):
-        print(f"- **Uploader:** {info['uploader']}")
-    print(f"- **Duration:** {format_time(full_duration)} ({full_duration:.1f}s)")
+        p(f"- **Uploader:** {info['uploader']}")
+    p(f"- **Duration:** {format_time(full_duration)} ({full_duration:.1f}s)")
     if focused:
-        print(
-            f"- **Focus range:** {format_time(effective_start)} → {format_time(effective_end)} "
-            f"({effective_duration:.1f}s)"
-        )
+        p(f"- **Focus range:** {format_time(effective_start)} → {format_time(effective_end)} "
+          f"({effective_duration:.1f}s)")
     if meta.get("width") and meta.get("height"):
-        print(f"- **Resolution:** {meta['width']}x{meta['height']} ({meta.get('codec') or 'unknown codec'})")
+        p(f"- **Resolution:** {meta['width']}x{meta['height']} ({meta.get('codec') or 'unknown codec'})")
     range_mode = "focused" if focused else "full"
-    print(f"- **Detail:** {detail}")
+    p(f"- **Detail:** {detail}")
     detail_count = frame_meta.get("selected_count", 0)
     if detail != "transcript":
         cap_label = "unlimited" if detail_budget is None else str(detail_budget)
@@ -327,97 +381,106 @@ def main() -> int:
         fallback = " fallback" if frame_meta.get("fallback") else ""
         deduped = frame_meta.get("deduped_count", 0)
         dedup_note = f", {deduped} near-duplicate{'s' if deduped != 1 else ''} dropped" if deduped else ""
-        print(
-            f"- **Frames:** {detail_count} selected from {frame_meta.get('candidate_count', detail_count)} "
-            f"candidates ({engine}{fallback}{dedup_note}, {range_mode} range, budget {target}, cap {cap_label})"
-        )
+        p(f"- **Frames:** {detail_count} selected from {frame_meta.get('candidate_count', detail_count)} "
+          f"candidates ({engine}{fallback}{dedup_note}, {range_mode} range, budget {target}, cap {cap_label})")
     elif not cue_frames:
-        print("- **Frames:** skipped (transcript detail)")
+        p("- **Frames:** skipped (transcript detail)")
     if cue_frames:
         dropped = cue_meta.get("dropped_out_of_window", 0)
         drop_note = f", {dropped} dropped outside range" if dropped else ""
-        print(
-            f"- **Cue frames:** {len(cue_frames)} at transcript-flagged timestamps "
-            f"(transcript-cue{drop_note})"
-        )
+        p(f"- **Cue frames:** {len(cue_frames)} at transcript-flagged timestamps (transcript-cue{drop_note})")
     if frames:
-        print(f"- **Frame size:** max {args.resolution}px wide, max 1998px tall")
+        p(f"- **Frame size:** max {args.resolution}px wide, max 1998px tall")
+    lines = timeline.merge_lines(transcript_segments, [f["timestamp_seconds"] for f in frames])
+    if ocr_meta:
+        heard = len(text_events)
+        text_events = ocr.drop_spoken(text_events, lines)
+        captions = sum(e.get("kind") == "caption" for e in text_events)
+        counts = ", ".join(part for part in (
+            f"{captions} caption line{'s' if captions != 1 else ''}" if captions else "",
+            f"{len(text_events) - captions} text line{'s' if len(text_events) - captions != 1 else ''}"
+            if len(text_events) > captions else "",
+            f"{heard - len(text_events)} spoken captions dropped" if heard > len(text_events) else "") if part)
+        p(f"- **On-screen text:** {counts or 'none detected'} (OCR via {ocr_meta['backend']}, "
+          f"{ocr_meta['samples']} samples at {ocr_meta['rate']:.2g} fps)")
+    elif not ocr_backend and not ocr_problem and video_path and meta.get("has_video"):
+        p("- **On-screen text:** off" + (" (no OCR engine installed; install tesseract to read captions and slides)"
+                                         if ocr_choice == "auto" else ""))
     if transcript_segments:
         in_range = " in range" if focused else ""
-        print(
-            f"- **Transcript:** {len(transcript_segments)} segments{in_range} "
-            f"(via {transcript_source or 'captions'})"
-        )
+        p(f"- **Transcript:** {len(lines)} lines{in_range} (via {transcript_source or 'captions'})")
     else:
-        print(f"- **Transcript:** {transcript_state}")
+        p(f"- **Transcript:** {transcript_state}")
     if gaps:
-        print("- **Transcript status:** partial; missing intervals:")
+        p("- **Transcript status:** partial; missing intervals:")
         for gap in gaps:
             end = gap["end"] if gap["end"] is not None else full_duration
-            print(f"  - {format_time(gap['start'])} → {format_time(end)}")
-
+            p(f"  - {format_time(gap['start'])} → {format_time(end)}")
     if detail == "token-burner" and len(frames) > 250:
-        print()
-        print(
-            f"> **Warning:** token-burner detail selected {len(frames)} frames. "
-            "This may use a large number of image tokens."
-        )
-
+        p("")
+        p(f"> **Warning:** token-burner detail selected {len(frames)} frames. "
+          "This may use a large number of image tokens.")
     if not focused and full_duration > 600 and detail not in ("transcript", "token-burner"):
         mins = int(full_duration // 60)
-        print()
-        print(
-            f"> **Warning:** This is a {mins}-minute video. Frame coverage is sparse at this length "
-            f"under `{detail}` detail — its cap spreads thin across the full clip. For better results, "
-            "re-run with `--start HH:MM:SS --end HH:MM:SS` to zoom into a section, or use "
-            "`--detail token-burner` to keep every scene-change frame across the whole video."
-        )
+        p("")
+        p(f"> **Warning:** This is a {mins}-minute video. Frame coverage is sparse at this length "
+          f"under `{detail}` detail — its cap spreads thin across the full clip. For better results, "
+          "re-run with `--start HH:MM:SS --end HH:MM:SS` to zoom into a section, or use "
+          "`--detail token-burner` to keep every scene-change frame across the whole video.")
 
-    print()
-    print("## Frames")
-    print()
-    if frames:
-        print(f"Frames live at: `{work / 'frames'}`")
-        print()
-        print(
-            "**Read each frame path below with the Read tool to view the image.** "
-            "Frames are in chronological order; `t=MM:SS` is the absolute timestamp in the source video."
-        )
-        print()
-        for frame in frames:
-            print(
-                f"- `{frame['path']}` "
-                f"(t={format_time(frame['timestamp_seconds'])}, reason={frame.get('reason', 'selected')})"
-            )
-    else:
-        print("_No frames extracted._")
-
-    print()
-    print("## Transcript")
-    print()
-    if transcript_text:
+    speech = None
+    if transcript_segments:
         label = transcript_source or "captions"
-        if focused:
-            print(f"_Source: {label}. Filtered to {format_time(effective_start)} → {format_time(effective_end)}:_")
-        else:
-            print(f"_Source: {label}._")
-        print()
-        print("```")
-        print(transcript_text)
-        print("```")
-    else:
-        print(f"_{transcript_state.capitalize()}._")
-        if detail == "transcript" and not track_available:
-            print("_Re-run with `--detail balanced` for visual evidence, or configure a transcription backend with setup.py._")
-    if errors:
-        print()
-        print("## Unavailable evidence")
-        for error in errors:
-            print(f"- {error}")
+        speech = (f"{label}, filtered to {format_time(effective_start)} → {format_time(effective_end)}"
+                  if focused else label)
+    data = timeline.build(
+        frames=frames, lines=lines, text=text_events, speech_source=speech,
+        chapters=timeline.chapters_from(info, meta), description=timeline.short_description(info.get("description")),
+        header={"source": args.source, "title": info.get("title"), "uploader": info.get("uploader"),
+                "duration": round(full_duration, 3), "detail": detail, "transcript": transcript_state,
+                "focus": [effective_start, effective_end] if focused else None, "gaps": gaps})
 
+    def render(frames_dir: Path) -> str:
+        body = ["\n".join(head), "", timeline.render_sections(data, frames_dir)]
+        if not track_available and detail == "transcript" and not transcript_segments:
+            body += ["", "_Re-run with `--detail balanced` for visual evidence, or configure a transcription backend with setup.py._"]
+        if errors:
+            body += ["", "## Unavailable evidence", *[f"- {error}" for error in errors]]
+        return "\n".join(body)
+
+    # Only complete, reproducible evidence is cached: a transient failure or a missing key
+    # must not be replayed after it is fixed.
+    entry = None
+    if cache_key and not errors and not transcript_state.startswith("unavailable"):
+        staging = None
+        try:
+            staging = cache.begin(cache_root)
+            if frames:
+                shutil.copytree(work / "frames", staging / "frames")
+            timeline.write(data, staging, render(cache_root / cache_key / "frames"))
+            entry = cache.commit(cache_root, cache_key, staging)
+            shutil.rmtree(work / "frames", ignore_errors=True)
+        except OSError as exc:
+            if staging:
+                cache.abandon(staging)
+            print(f"[watch] cache not saved ({type(exc).__name__}: {exc})", file=sys.stderr)
+    home = entry or work
+    report = render(home / "frames")
+    if not entry:
+        timeline.write(data, work, report)
+
+    print()
+    print(report)
     print()
     print("---")
-    print(f"_Work dir: `{work}` — delete when done._")
+    if video_path:
+        print(f"_Local media: `{video_path}`_")
+    print(f"_Timeline: `{home / 'timeline.md'}` (+ `timeline.json`)"
+          + (" — cached; reruns with the same options reuse it._" if entry else "._"))
+    if entry and not any(path.is_file() for path in work.rglob("*")):
+        shutil.rmtree(work, ignore_errors=True)  # Run-owned and empty: nothing left to clean up.
+    else:
+        print(f"_Work dir: `{work}` — delete when done._")
 
     return 1 if errors and not frames and not transcript_segments and not track_available else 0
 

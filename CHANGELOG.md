@@ -2,6 +2,25 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Added
+- **One interleaved timeline.** The local report's separate Frames and Transcript sections are replaced by a single `## Timeline`: `[MM:SS] FRAME <file> (<reason>)` markers interleaved with speech, so what was said sits under what was on screen. Each run also writes `timeline.md` and a machine-readable `timeline.json`.
+- Speech fragments are merged into sentence-sized lines (split at punctuation, pauses, size bounds, `>>` speaker changes, and frame boundaries).
+- `## Chapters` from yt-dlp metadata or container chapters, and a truncated `## Description` for URLs.
+- **Timeline cache** in `~/.cache/watch/timelines` (50 most recent): a rerun with the same source and evidence options reuses the saved report and frames without network, download, or transcription. `--refresh`, `--no-cache`, and `WATCH_CACHE_DIR` (`off` disables). Partial or failed runs are never cached.
+
+- **On-screen text.** Burned-in captions, slides, UI, and code are read by local OCR from a separate adaptive-rate sample (3 fps for short clips, where captions change every ~0.5 s) and interleaved as `[MM:SS] TEXT: …` lines, each reported once when it appears. Burned-in word-pop captions are merged into sentence-sized `CAPTION:` lines (233 rows → 35 on a real 90-second Reel); captions that repeat the speech transcript and recurring background misreads are dropped. Tesseract reads both the plain frame and a bright-text mask (white/yellow captions with dark outlines, which raw Tesseract cannot read over video); Apple Vision is used on macOS when Tesseract is absent. `--ocr`, `WATCH_OCR`, `WATCH_OCR_LANG`, `WATCH_OCR_FPS`; `setup.py --json` reports `ocr_backend` and an install hint. Without platform captions, `transcript` detail now downloads video instead of audio-only so burned-in captions can be read.
+
+- **whisper.cpp speech backend** (`whispercpp`): local transcription from one native binary and a ggml model, with no Python dependencies. `setup.py --backend whispercpp` installs the binary with Homebrew on macOS (or prints the platform's install step), downloads the model into `~/.cache/watch/whisper.cpp`, and warms it up. The detected language is reported. `WATCH_WHISPERCPP_MODEL` (default `small`), `_LANGUAGE`, `_THREADS`, `_TIMEOUT`, `_BIN`. It's now the wizard's recommended transcription choice; WhisperX remains available.
+- `WATCH_GROQ_MODEL`.
+
+### Changed
+- Groq transcription defaults to `whisper-large-v3-turbo`: about a third of the price, still with segment timestamps. Set `WATCH_GROQ_MODEL=whisper-large-v3` to keep the previous model.
+
+### Fixed
+- YouTube rolling auto-captions no longer repeat every line two or three times: a cue's first line that only re-displays the previous cue's last line, and the 10 ms re-display cues, are dropped. Independent repeated speech is kept.
+
 ## [0.3.2] — 2026-09-25
 
 ### Changed

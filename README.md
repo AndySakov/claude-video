@@ -203,14 +203,27 @@ The first-run wizard asks for your detail preference and fallback backend. Start
 
 | Backend | Requirements and behavior |
 |---|---|
-| `whisperx` | Recommended for transcription on a verified local machine. No API key; the skill manages a separate Python 3.12 environment and downloads its models. |
-| `groq` | Cloud `whisper-large-v3`; needs `GROQ_API_KEY` from [Groq](https://console.groq.com/keys). |
+| `whispercpp` | Recommended. Local [whisper.cpp](https://github.com/ggml-org/whisper.cpp): one native binary plus a model file, no API key, no Python packages; audio stays on the machine. |
+| `groq` | Cloud `whisper-large-v3-turbo` (cheapest cloud option; `WATCH_GROQ_MODEL` selects another); needs `GROQ_API_KEY` from [Groq](https://console.groq.com/keys). |
+| `whisperx` | Heavier local option; the skill manages a separate Python 3.12 environment and downloads its models. |
 | `openai` | Cloud `whisper-1`; needs `OPENAI_API_KEY` from [OpenAI](https://platform.openai.com/api-keys). |
 | `none` | Captions only. Local files and captionless URLs can still provide visual evidence. |
 
-Existing 0.2.0 users retain `auto`: Groq key first, then OpenAI. No automatic migration to local inference. Explicit `--whisper groq|openai|whisperx` overrides this run's fallback, while `--no-whisper` disables all fallbacks and still permits native captions. Those two flags conflict.
+Existing 0.2.0 users retain `auto`: Groq key first, then OpenAI. No automatic migration to local inference. Explicit `--whisper groq|openai|whispercpp|whisperx` overrides this run's fallback, while `--no-whisper` disables all fallbacks and still permits native captions. Those two flags conflict.
 
 Settings live in `~/.config/watch/.env`. Enter keys privately there or in the process environment; do not commit them or paste them into public issues. Cloud-key lookup is provider preference first, then environment → user file → cwd `.env` for each provider. Explicit providers never borrow another provider's key. Config files support UTF-8, UTF-8 BOM, and BOM-marked UTF-16; quotes, comments, and literal Windows paths work without shell expansion. Last assignment wins.
+
+### Local whisper.cpp
+
+Have the agent run the bundled `setup.py --backend whispercpp --detail balanced`. It needs the `whisper-cli` binary:
+
+| Platform | Binary |
+|---|---|
+| macOS | `brew install whisper-cpp` (setup runs this for you when Homebrew is present; Metal-accelerated on Apple Silicon) |
+| Linux | Build from [source](https://github.com/ggml-org/whisper.cpp): `cmake -B build && cmake --build build -j --target whisper-cli`, then put `build/bin/whisper-cli` on PATH or set `WATCH_WHISPERCPP_BIN` |
+| Windows | Download `whisper-bin-x64.zip` from the [releases](https://github.com/ggml-org/whisper.cpp/releases) and set `WATCH_WHISPERCPP_BIN` to `whisper-cli.exe` |
+
+Setup then downloads the model once from Hugging Face into `~/.cache/watch/whisper.cpp`, transcribes two seconds of silence to confirm it works, and saves the backend. `WATCH_WHISPERCPP_MODEL` picks the model: `base` (148 MB, fastest), `small` (466 MB, default), `small.en`, or `large-v3-turbo-q5_0` (547 MB, most accurate; best on Apple Silicon). Rerun setup after changing it. `WATCH_WHISPERCPP_LANGUAGE=sw` (for example) fixes the language when auto-detection is wrong. On a 4-core Linux CPU, a 54-second clip took about 10 s with `base` and 30 s with `small`.
 
 ### Managed WhisperX
 
@@ -267,6 +280,22 @@ Uniform sampling selects actual source frames across the range, reducing its rat
 A 16×16 **RGB** thumbnail pass removes near-duplicates using mean channel difference. Use `--no-dedup` for subtle visual changes; tiny thumbnails cannot preserve every code edit. Default images are up to 512px wide and 1998px tall; `--resolution 1024` helps with on-screen text. Image cost depends on the host/model and frame dimensions.
 
 After reading a transcript, the agent can pin “look here” moments with `--timestamps`. These consume the frame budget first. A caption-only pass may not download a video; in that case the cue pass uses the URL again. An audio-only download cannot supply cue frames.
+
+## The timeline and its cache
+
+The local engine's report is one chronological timeline: `FRAME` markers interleaved with speech merged into sentence-sized lines, so what was said sits directly under what was on screen. Chapters and a short description are included when the source has them.
+
+```text
+[00:00] FRAME frame_0001.jpg (first-frame)
+[00:00] all right so here we are in front of the elephants
+[00:14] FRAME frame_0007.jpg (scene-change)
+[00:14] TEXT: Q3 Revenue / Bookings up 18 percent
+[00:15] the cool thing about these guys is that they have really long trunks
+```
+
+`CAPTION:` lines are burned-in captions merged into phrases; `TEXT:` lines are other on-screen text — slides, UI, code. Both are read by local OCR (up to 3 samples per second on short clips) and reported once, when they appear. They matter most on Reels, TikTok, and Shorts, where burned-in captions are often the only transcript. OCR is optional and never blocks a run: install [Tesseract](https://tesseract-ocr.github.io/tessdoc/Installation.html) (`brew install tesseract`, `sudo apt install tesseract-ocr`, or `winget install UB-Mannheim.TesseractOCR`), or on macOS let watch use Apple's built-in Vision OCR (needs `xcode-select --install`). Choose with `--ocr auto|tesseract|vision|none` or `WATCH_OCR`; `WATCH_OCR_LANG=eng+spa` adds Tesseract languages.
+
+Each run writes `timeline.md` and a machine-readable `timeline.json`. Complete runs are cached in `~/.cache/watch/timelines` (the 50 most recently used), keyed by the source and every option that changes the evidence. Asking again with the same options reuses the saved timeline and frames without downloading or transcribing. Use `--refresh` to rebuild, `--no-cache` for a one-off run, or set `WATCH_CACHE_DIR` to move the cache (`off` disables it). Only text and the selected frames are cached, never media or audio.
 
 ## Captions, authentication, and partial results
 

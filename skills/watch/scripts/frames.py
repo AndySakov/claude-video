@@ -84,7 +84,7 @@ def format_time(seconds: float) -> str:
 
 def get_metadata(video_path: str) -> dict:
     result = run_text([
-        "ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams",
+        "ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams", "-show_chapters",
         str(Path(video_path).resolve()),
     ], timeout=30)
     if result.returncode != 0:
@@ -107,6 +107,7 @@ def get_metadata(video_path: str) -> dict:
             "duration_seconds": duration, "width": video.get("width"), "height": video.get("height"),
             "codec": video.get("codec_name"), "size_bytes": int(fmt.get("size") or 0),
             "has_audio": bool(audio), "has_video": bool(video),
+            "chapters": data.get("chapters") if isinstance(data.get("chapters"), list) else [],
         }
     except (ValueError, TypeError, KeyError, AttributeError):
         raise SystemExit(f"ffprobe returned invalid metadata, streams, or duration: {diagnostic(result.stderr)}") from None

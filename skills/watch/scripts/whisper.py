@@ -23,13 +23,14 @@ import uuid
 from pathlib import Path
 from urllib.request import Request, urlopen
 
-from config import load_api_key, ConfigError
+from config import get_config, load_api_key, ConfigError
 from runtime import configure_stdio, run_text
 from transcribe import Segments, normalize_segments
 
 
 GROQ_ENDPOINT = "https://api.groq.com/openai/v1/audio/transcriptions"
-GROQ_MODEL = "whisper-large-v3"
+# Turbo is about a third of whisper-large-v3's price and still returns segment timestamps.
+GROQ_MODEL = "whisper-large-v3-turbo"
 
 OPENAI_ENDPOINT = "https://api.openai.com/v1/audio/transcriptions"
 OPENAI_MODEL = "whisper-1"
@@ -336,7 +337,8 @@ def transcribe_chunks(
 def _transcribe_file(backend: str, api_key: str, audio_path: Path) -> list[dict]:
     """Upload one audio file and return its 0-based segments."""
     if backend == "groq":
-        response = _post_whisper(GROQ_ENDPOINT, api_key, GROQ_MODEL, audio_path)
+        model = get_config().get('groq_model') or GROQ_MODEL  # WATCH_GROQ_MODEL, e.g. whisper-large-v3
+        response = _post_whisper(GROQ_ENDPOINT, api_key, model, audio_path)
     elif backend == "openai":
         response = _post_whisper(OPENAI_ENDPOINT, api_key, OPENAI_MODEL, audio_path)
     else:
@@ -356,6 +358,11 @@ def transcribe_video(
     """
     if api_key is not None and backend is None:
         raise SystemExit("An API key requires an explicit groq or openai backend.")
+    if backend == "whispercpp":
+        if api_key is not None:
+            raise SystemExit("whisper.cpp does not accept an API key.")
+        from local_whispercpp import transcribe_media
+        return transcribe_media(video_path, audio_out.parent), "whispercpp"
     if backend == "whisperx":
         if api_key is not None:
             raise SystemExit("WhisperX does not accept an API key.")
@@ -416,7 +423,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Transcribe local media with the selected Whisper backend.")
     parser.add_argument("video")
     parser.add_argument("audio_out", nargs="?", default="audio.mp3", type=Path)
-    parser.add_argument("--backend", choices=["groq", "openai", "whisperx"])
+    parser.add_argument("--backend", choices=["groq", "openai", "whispercpp", "whisperx"])
     args = parser.parse_args()
     try:
         segments, backend = transcribe_video(args.video, Path(args.audio_out), backend=args.backend)

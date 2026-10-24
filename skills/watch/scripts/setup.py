@@ -15,6 +15,14 @@ from pathlib import Path
 from config import (CONFIG_DIR, CONFIG_FILE, ConfigError, DETAILS, ENGINES, get_config,
                     load_api_key, load_gemini_key, read_env_file, resolve_engine, write_settings)
 from runtime import configure_stdio, diagnostic, run_text
+import ocr
+
+# Optional: on-screen text (burned-in captions, slides). Never blocks setup.
+OCR_HINTS = {
+    'Darwin': 'Apple Vision OCR needs the swift command (xcode-select --install); or brew install tesseract.',
+    'Linux': 'Install tesseract for on-screen text: sudo apt install tesseract-ocr (or your distribution\'s package).',
+    'Windows': 'Install tesseract for on-screen text: winget install --id UB-Mannheim.TesseractOCR, then add it to PATH.',
+}
 
 REQUIRED_BINARIES = ['ffmpeg', 'ffprobe', 'yt-dlp']
 WHISPERX_VERSION = '3.8.6'
@@ -155,7 +163,14 @@ def _status(detailed=False):
     chosen = cfg['whisper_backend']
     backend = detected if chosen == 'auto' else chosen
     local_ready = _whisperx_status(cfg, detailed)
-    backend_ready = local_ready if chosen == 'whisperx' else (bool(load_api_key(backend)[1]) if backend in ('groq', 'openai') else chosen == 'none')
+    import local_whispercpp
+    try:
+        cpp_cfg = local_whispercpp.settings(cfg)
+        cpp_ready, cpp_bin, cpp_model = (local_whispercpp.ready(cpp_cfg), local_whispercpp.find_executable(cpp_cfg),
+                                         str(local_whispercpp.model_path(cpp_cfg)))
+    except ConfigError:
+        cpp_ready, cpp_bin, cpp_model = False, None, None
+    backend_ready = cpp_ready if chosen == 'whispercpp' else local_ready if chosen == 'whisperx' else (bool(load_api_key(backend)[1]) if backend in ('groq', 'openai') else chosen == 'none')
     blocked = bool(missing) and binaries_required
     result = {'status': 'needs_install' if blocked else 'ready', 'can_proceed': not blocked,
               'engine': engine, 'configured_engine': cfg['engine'], 'gemini_key_present': gemini_key,
@@ -165,7 +180,12 @@ def _status(detailed=False):
               'has_api_key': has_key, 'backend_ready': backend_ready,
               'whisperx_ready': local_ready, 'whisperx_bin': cfg['whisperx_bin'],
               'whisperx_model': cfg['whisperx_model'], 'config_file': str(CONFIG_FILE),
+              'whispercpp_ready': cpp_ready, 'whispercpp_bin': str(cpp_bin) if cpp_bin else None,
+              'whispercpp_model': cpp_model,
               'watch_detail': cfg['detail'], 'platform': platform.system()}
+    ocr_backend, ocr_problem = ocr.resolve(cfg['ocr'])
+    result.update(ocr_backend=ocr_backend, configured_ocr=cfg['ocr'], ocr_problem=ocr_problem,
+                  ocr_hint=None if ocr_backend else OCR_HINTS.get(platform.system(), OCR_HINTS['Linux']))
     if detailed:
         tools = {}
         for name in REQUIRED_BINARIES:
@@ -226,6 +246,8 @@ def cmd_install(backend=None, detail=None, engine=None):
         write_settings({'WATCH_DETAIL': detail}, CONFIG_FILE)
     if backend == 'whisperx':
         return install_whisperx()
+    if backend == 'whispercpp':
+        return install_whispercpp()
     if backend:
         write_settings({'WATCH_WHISPER_BACKEND': backend}, CONFIG_FILE)
         if backend in ('groq', 'openai') and not load_api_key(backend)[1]:
@@ -261,6 +283,40 @@ def _ensure_uv():
     if installed or fallback.is_file():
         return installed or str(fallback)
     raise SystemExit('uv installed but could not be found; reopen your terminal and rerun setup.')
+
+
+def install_whispercpp():
+    """Native binary from the package manager + one model file; no Python packages."""
+    import local_whispercpp as wcpp
+    cfg = wcpp.settings()
+    _scaffold_env()
+    executable = wcpp.find_executable(cfg)
+    if not executable:
+        system = platform.system()
+        if system == 'Darwin' and _which('brew'):
+            _install_step(['brew', 'install', 'whisper-cpp'], 'Install whisper.cpp')
+            executable = wcpp.find_executable(cfg)
+        if not executable:
+            hint = {'Darwin': 'Install Homebrew (https://brew.sh), then: brew install whisper-cpp',
+                    'Windows': 'Download whisper-bin-x64.zip from https://github.com/ggml-org/whisper.cpp/releases, '
+                               'unzip it, and set WATCH_WHISPERCPP_BIN to the full path of whisper-cli.exe',
+                    }.get(system, 'Build whisper-cli from https://github.com/ggml-org/whisper.cpp (cmake -B build && '
+                                  'cmake --build build -j --target whisper-cli), then put it on PATH or set WATCH_WHISPERCPP_BIN')
+            print(f'[setup] whisper.cpp is not installed. {hint}; then rerun --backend whispercpp.', file=sys.stderr)
+            return 2
+    model = wcpp.model_path(cfg)
+    if not model.is_file():
+        print(f"[setup] Downloading the whisper.cpp {cfg['whispercpp_model']} model to {model} (one time)…", file=sys.stderr, flush=True)
+        wcpp.download_model(cfg['whispercpp_model'], model)
+    with tempfile.TemporaryDirectory(prefix='watch-warmup-') as temporary:
+        audio = Path(temporary) / 'silence.mp4'
+        _install_step(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i',
+                       'anullsrc=r=16000:cl=mono', '-t', '2', str(audio)], 'Create warm-up audio')
+        wcpp.transcribe_media(str(audio), Path(temporary), {**cfg, 'whispercpp_bin': str(executable)})
+    write_settings({'WATCH_WHISPER_BACKEND': 'whispercpp', 'WATCH_WHISPERCPP_BIN': str(executable),
+                    'WATCH_WHISPERCPP_MODEL': cfg['whispercpp_model'], 'SETUP_COMPLETE': 'true'}, CONFIG_FILE)
+    print(f'[setup] whisper.cpp is ready ({executable}, model {model.name}). Audio stays on this machine.', file=sys.stderr)
+    return 0
 
 
 def install_whisperx():
@@ -318,7 +374,7 @@ def main():
     mode.add_argument('--check', action='store_true')
     mode.add_argument('--json', action='store_true')
     mode.add_argument('--install-whisperx', action='store_true')
-    parser.add_argument('--backend', choices=['auto', 'whisperx', 'groq', 'openai', 'none'])
+    parser.add_argument('--backend', choices=['auto', 'whispercpp', 'whisperx', 'groq', 'openai', 'none'])
     parser.add_argument('--detail', choices=sorted(DETAILS))
     parser.add_argument('--engine', choices=sorted(ENGINES))
     args = parser.parse_args()
