@@ -168,12 +168,24 @@ def parse_tsv(tsv: str) -> list[dict]:
     return sorted(out, key=lambda l: l['y'])
 
 
-def _tesseract(path: str, lang: str, psm: str) -> list[dict]:
+def _tesseract(paths: list[str], lang: str, psm: str, listing: Path) -> list[list[dict]]:
+    """Read many images in one process: loading the language model costs ~0.1 s per launch,
+    which was nearly half of OCR time at 3 samples per second. Results match one-image runs."""
+    if not paths:
+        return []
+    listing.write_text(''.join(f'{path}\n' for path in paths), encoding='utf-8')
     env = {**os.environ, 'OMP_THREAD_LIMIT': '1'}  # Parallelism comes from the pool, not OpenMP.
-    result = run_text(['tesseract', path, 'stdout', '-l', lang, '--psm', psm, 'tsv'], timeout=120, env=env)
+    result = run_text(['tesseract', str(listing), 'stdout', '-l', lang, '--psm', psm, 'tsv'],
+                      timeout=60 + 5 * len(paths), env=env)
     if result.returncode != 0:
         raise SystemExit(f'tesseract failed: {diagnostic(result.stderr, 400)}')
-    return parse_tsv(result.stdout)
+    header, *rows = result.stdout.splitlines() or ['']
+    pages: dict[int, list[str]] = {}
+    for row in rows:  # Column 2 is the 1-based page (image) number within the list.
+        cols = row.split('\t', 2)
+        if len(cols) > 1 and cols[1].isdigit():
+            pages.setdefault(int(cols[1]), []).append(row)
+    return [parse_tsv('\n'.join([header, *pages.get(page, [])])) for page in range(1, len(paths) + 1)]
 
 
 def merge_passes(*passes: list[dict]) -> list[str]:
@@ -187,13 +199,24 @@ def merge_passes(*passes: list[dict]) -> list[str]:
 
 
 def read_tesseract(samples: list[dict], lang: str) -> list[list[str]]:
-    def one(sample):
-        passes = [_tesseract(sample['path'], lang, '3')]
-        if sample.get('mask'):
-            passes.append(_tesseract(sample['mask'], lang, '11'))
-        return merge_passes(*passes)
-    with ThreadPoolExecutor(max_workers=max(1, min(8, os.cpu_count() or 1))) as pool:
-        return list(pool.map(one, samples))
+    """Plain frames (psm 3) and bright-text masks (psm 11), each split into one batch per worker."""
+    if not samples:
+        return []
+    workers = max(1, min(8, os.cpu_count() or 1))
+    size = -(-len(samples) // (workers * 3))  # Several batches per worker keep the pool busy until the end.
+    chunks = [samples[i:i + size] for i in range(0, len(samples), size)]
+    listing = Path(samples[0]['path']).parent
+    jobs = [(chunk, 'path', '3') for chunk in chunks] + [(chunk, 'mask', '11') for chunk in chunks]
+    def run(job):
+        number, (chunk, key, psm) = job
+        paths = [s[key] for s in chunk if s.get(key)]
+        read = iter(_tesseract(paths, lang, psm, listing / f'list_{number}.txt'))
+        return [next(read) if s.get(key) else [] for s in chunk]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(run, enumerate(jobs)))
+    plain = [lines for part in results[:len(chunks)] for lines in part]
+    masked = [lines for part in results[len(chunks):] for lines in part]
+    return [merge_passes(a, b) for a, b in zip(plain, masked)]
 
 
 def read_vision(samples: list[dict]) -> list[list[str]]:
