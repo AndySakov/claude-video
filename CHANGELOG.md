@@ -5,6 +5,7 @@ All notable changes to `/watch` are documented here.
 ## [Unreleased]
 
 ### Added
+- Progress and timing on stderr: each described frame reports its time (`[watch] described 3/14 (4.8 s)`), and every run ends with `[watch] time: metadata … · media … · frames … · descriptions … · on-screen text … · speech … · total …`.
 - **sherpa-onnx speech backend with speaker labels** (`sherpa`): local NVIDIA Parakeet TDT 0.6B v3 (25 European languages, punctuated, token timestamps), about twice as fast as whisper.cpp `small` on a CPU (a 54-second clip: 14 s against 26 s on 4 cores). Silero VAD cuts speech, and pieces are split at sentence ends using token timestamps. Speaker turns from pyannote segmentation + NVIDIA TitaNet-small appear as `[MM:SS] SPK1: …` timeline lines (numbered by first appearance, only when two or more voices are found), and speech lines now also split at speaker changes. `WATCH_SHERPA_MODEL` (`parakeet`, `parakeet-en`, `moonshine-base`, `moonshine-tiny`, `sensevoice`), `WATCH_SHERPA_SPEAKERS` (`auto`, `off`, or a known count), `WATCH_SHERPA_THREADS`, `WATCH_SHERPA_TIMEOUT`. `setup.py --backend sherpa` builds a ~45 MB venv (no torch or numpy; uv when installed, else the standard-library `venv`) and downloads models pinned to a Hugging Face revision and SHA-256. `setup.py --json` reports `sherpa_ready`, `sherpa_model`, and `sherpa_speakers`.
 
 ### Changed

@@ -146,7 +146,9 @@ def render_sections(data: dict, frames_dir: Path | None) -> str:
             out.append('`FRAME` lines carry a model-written description; a frame shows what is on screen from its '
                        'time until the next FRAME line. **Read the timeline first, then open only the frame files '
                        'whose exact visual detail the answer needs** (small text, colours, layout, expressions). '
-                       'Descriptions can be wrong; a frame file is the evidence.'
+                       'Descriptions can be wrong, and small models misread handwriting and small text: quote '
+                       'on-screen words from `TEXT:`/`CAPTION:` lines or the frame file, never from a description. '
+                       'A frame file is the evidence.'
                        + (' FRAME lines without a description were not described; open them when that moment matters.'
                           if not all(f.get('desc') for f in data['frames']) else ''))
         else:
@@ -156,7 +158,8 @@ def render_sections(data: dict, frames_dir: Path | None) -> str:
     if data.get('text'):
         out.append('`CAPTION:` lines are burned-in captions read by OCR and merged into phrases (usually the '
                    'spoken words). `TEXT:` lines are other on-screen text (slides, UI, overlays) when it appears; '
-                   '`/` separates lines shown together. OCR can misread stylized text.')
+                   '`/` separates lines shown together. OCR can misread stylized text: when speech lines cover the same '
+                   'moment, quote the speech.')
         out.append('')
     if data.get('scenes'):
         out.append("`SCENE:` lines are the remote model's description of what is on screen; there are no frame files. "
