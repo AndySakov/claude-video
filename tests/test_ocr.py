@@ -56,7 +56,7 @@ def test_read_tesseract_keeps_sample_order_across_batches(monkeypatch, tmp_path)
     def fake(paths, lang, psm, listing):
         return [[{'text': f"{psm}:{Path(p).stem}", 'conf': 0.9, 'y': 1 if psm == '3' else 2}] for p in paths]
     monkeypatch.setattr(ocr, '_tesseract', fake)
-    out = ocr.read_tesseract(samples, 'eng')
+    out = [[l['text'] for l in lines] for lines in ocr.read_tesseract(samples, 'eng')]
     assert out == [[f'3:raw_{i}'] + ([f'11:mask_{i}'] if i % 2 else []) for i in range(13)]
 
 
@@ -98,11 +98,28 @@ for path in sys.stdin.read().split(chr(10)):
     real = ocr.run_text
     monkeypatch.setattr(ocr, 'run_text', lambda cmd, **kw: calls.append((kw['input'].count(chr(10)), kw['timeout'])) or real(cmd, **kw))
     samples = [{'path': str(tmp_path / f'raw_{i:04d}.jpg')} for i in range(10)]
-    assert ocr.read_vision(samples) == [[f'Frame raw_{i:04d}'] for i in range(10)]
+    assert [[l['text'] for l in s] for s in ocr.read_vision(samples)] == [[f'Frame raw_{i:04d}'] for i in range(10)]
     # One sample alone first, with the long warm-up limit; then the rest side by side.
     assert calls[0] == (1, ocr.VISION_WARMUP_SECONDS) and sorted(n for n, _ in calls[1:]) == [3, 3, 3]
     calls.clear()
-    assert ocr.read_vision(samples[:1]) == [['Frame raw_0000']] and calls == [(1, ocr.VISION_WARMUP_SECONDS)]
+    assert [l['text'] for l in ocr.read_vision(samples[:1])[0]] == ['Frame raw_0000'] and calls == [(1, ocr.VISION_WARMUP_SECONDS)]
+
+
+def test_unconfident_lines_need_a_neighbouring_sample_to_read_them_alike():
+    def line(text, conf):
+        return {'text': text, 'conf': conf, 'y': 0.5}
+    per_sample = [
+        [line('Sell the vacation', 0.95), line('KALA N Pw by', 0.63)],
+        [line('Sell the vacation', 0.95), line('Pury Concern', 0.61)],
+        [line('Each pillar is one statement', 0.80), line('Gat ie', 0.63)],
+        [line('Each pillar is 1 statement', 0.78)],           # reads alike: echoes the line above
+        [line('followed by an analogy', 0.70), line('Faw', 0.64)],
+        [], [],
+        [line('analogy or metaphor here', 0.70)],             # shares most words with a line 3 samples back: too far
+    ]
+    assert ocr.confirm_lines(per_sample) == [
+        ['Sell the vacation'], ['Sell the vacation'], ['Each pillar is one statement'],
+        ['Each pillar is 1 statement'], [], [], [], []]
 
 
 def test_clean_strips_symbol_tokens_and_stray_end_characters():
