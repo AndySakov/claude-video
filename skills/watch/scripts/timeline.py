@@ -96,7 +96,8 @@ def build(*, frames: list[dict], lines: list[dict], text: list[dict] = (), chapt
         'description': description,
         'speech_source': speech_source,
         'frames': [{'file': Path(f['path']).name, 't': round(f['timestamp_seconds'], 3),
-                    'reason': f.get('reason', 'selected')} for f in frames],
+                    'reason': f.get('reason', 'selected'),
+                    **({'desc': f['description']} if f.get('description') else {})} for f in frames],
         'lines': [{'start': round(l['start'], 3), 'end': round(l['end'], 3), 'text': l['text']} for l in lines],
         'text': [{'start': round(e['start'], 3), 'end': round(e['end'], 3), 'text': e['text'],
                   'kind': e.get('kind', 'text')} for e in text],
@@ -108,7 +109,8 @@ def events(data: dict) -> list[str]:
 
     Text that appears in the same OCR sample (a slide's lines) shares one row.
     """
-    rows = [(f['t'], 0, f"[{clock(f['t'])}] FRAME {f['file']} ({f['reason']})") for f in data['frames']]
+    rows = [(f['t'], 0, f"[{clock(f['t'])}] FRAME {f['file']} ({f['reason']})" + (f": {f['desc']}" if f.get('desc') else ''))
+            for f in data['frames']]
     shown: dict[float, list[str]] = {}
     for item in data.get('text', []):
         if item.get('kind') == 'caption':
@@ -133,8 +135,16 @@ def render_sections(data: dict, frames_dir: Path | None) -> str:
     if data['frames'] and frames_dir is not None:
         out.append(f'Frames live at: `{frames_dir}`')
         out.append('')
-        out.append('**Read every `FRAME` file below from that directory with the Read tool.** '
-                   'A frame shows what is on screen from its time until the next FRAME line.')
+        if any(f.get('desc') for f in data['frames']):
+            out.append('`FRAME` lines carry a model-written description; a frame shows what is on screen from its '
+                       'time until the next FRAME line. **Read the timeline first, then open only the frame files '
+                       'whose exact visual detail the answer needs** (small text, colours, layout, expressions). '
+                       'Descriptions can be wrong; a frame file is the evidence.'
+                       + (' FRAME lines without a description were not described; open them when that moment matters.'
+                          if not all(f.get('desc') for f in data['frames']) else ''))
+        else:
+            out.append('**Read every `FRAME` file below from that directory with the Read tool.** '
+                       'A frame shows what is on screen from its time until the next FRAME line.')
         out.append('')
     if data.get('text'):
         out.append('`CAPTION:` lines are burned-in captions read by OCR and merged into phrases (usually the '

@@ -25,13 +25,14 @@ from transcribe import filter_range, parse_vtt  # noqa: E402
 import cache  # noqa: E402
 import timeline  # noqa: E402
 import ocr  # noqa: E402
+import describe  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
 from runtime import configure_stdio  # noqa: E402
 
 
 LOCAL_ONLY_FLAGS = (("--detail", "detail"), ("--fps", "fps"), ("--max-frames", "max_frames"),
                     ("--timestamps", "timestamps"), ("--whisper", "whisper"), ("--sub-lang", "sub_lang"),
-                    ("--ocr", "ocr"))
+                    ("--ocr", "ocr"), ("--describe", "describe"))
 
 
 def run_gemini(args, config, key, start_sec, end_sec, auth) -> int:
@@ -151,6 +152,9 @@ def main() -> int:
     ap.add_argument("--ocr", choices=list(ocr.CHOICES), default=None,
                     help="Read on-screen text (burned-in captions, slides, UI): auto (tesseract, else Apple "
                          "Vision on macOS, else off), tesseract, vision, or none.")
+    ap.add_argument("--describe", choices=list(describe.CHOICES), default=None,
+                    help="Describe each frame with a vision model at WATCH_DESCRIBE_URL (default local Ollama): "
+                         "auto (only when the endpoint has the model), on, or off.")
     ap.add_argument("--no-cache", action="store_true",
                     help="Neither reuse nor save a cached timeline for this run.")
     ap.add_argument("--refresh", action="store_true",
@@ -179,6 +183,8 @@ def main() -> int:
     sub_lang = args.sub_lang or config["sub_lang"]
     ocr_choice = args.ocr or config["ocr"]
     ocr_backend, ocr_problem = ocr.resolve(ocr_choice)
+    vision = describe.settings({**config, "describe": args.describe or config["describe"]})
+    describe_on, describe_problem = describe.resolve(vision) if detail != "transcript" else (False, None)
     cache_root = None if args.no_cache else cache.resolve_root(config["cache_dir"])
     # Every option that changes the evidence is part of the key; --question is not (unused locally).
     cache_key = cache_root and cache.run_key(args.source, {
@@ -189,6 +195,7 @@ def main() -> int:
         "whispercpp": [config["whispercpp_model"], config["whispercpp_language"]] if backend_choice == "whispercpp" else None,
         "groq": config["groq_model"] if backend_choice in ("groq", "auto") else None,
         "ocr": [ocr_backend, config["ocr_lang"], config["ocr_fps"]] if ocr_backend else None,
+        "describe": [vision["url"], vision["model"]] if describe_on else None,
     })
     hit = cache.lookup(cache_root, cache_key) if cache_key and not args.refresh else None
     if hit:
@@ -304,6 +311,20 @@ def main() -> int:
     if cue_frames:
         frames = merge_frames(frames, cue_frames)
 
+    described = 0
+    if describe_problem:
+        errors.append(f"Frame descriptions unavailable: {describe_problem}")
+    elif describe_on and frames:
+        print(f"[watch] describing {min(len(frames), vision['max'])} frames with "
+              f"{describe.display_name(vision['model'])}…", file=sys.stderr)
+        try:
+            descriptions = describe.describe_frames(frames, vision)
+            for frame in frames:
+                frame["description"] = descriptions.get(frame["path"])
+            described = len(descriptions)
+        except SystemExit as exc:
+            errors.append(f"Frame descriptions unavailable: {exc}")
+
     text_events, ocr_meta = [], None
     readable = bool(video_path and meta.get("has_video") and effective_end > effective_start)
     if ocr_problem and readable:
@@ -391,6 +412,9 @@ def main() -> int:
         p(f"- **Cue frames:** {len(cue_frames)} at transcript-flagged timestamps (transcript-cue{drop_note})")
     if frames:
         p(f"- **Frame size:** max {args.resolution}px wide, max 1998px tall")
+    if described:
+        p(f"- **Frame descriptions:** {described}{f' of {len(frames)}' if described < len(frames) else ''} via "
+          f"{describe.display_name(vision['model'])} at {describe.urlparse(vision['url']).netloc}")
     lines = timeline.merge_lines(transcript_segments, [f["timestamp_seconds"] for f in frames])
     if ocr_meta:
         heard = len(text_events)

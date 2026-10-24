@@ -44,7 +44,7 @@ def test_skill_documents_and_bundles_the_gemini_engine():
         assert needle in skill, needle
     assert 'CLAUDE_SKILL_DIR' not in skill
     runtime = sorted(p.name for p in (ROOT / 'skills/watch/scripts').glob('*.py'))
-    assert runtime == ['cache.py', 'config.py', 'download.py', 'frames.py', 'gemini.py', 'local_whispercpp.py', 'local_whisperx.py',
+    assert runtime == ['cache.py', 'config.py', 'describe.py', 'download.py', 'frames.py', 'gemini.py', 'local_whispercpp.py', 'local_whisperx.py',
                        'ocr.py', 'runtime.py', 'setup.py', 'timeline.py', 'transcribe.py', 'watch.py', 'whisper.py']
 
 
