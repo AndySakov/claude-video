@@ -1,5 +1,6 @@
 """Frame descriptions: a fake OpenAI-compatible server stands in for Ollama / llama-server / cloud."""
 import json
+import re
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -107,7 +108,7 @@ def test_watch_puts_descriptions_on_frame_lines_and_caches_them(server, monkeypa
     assert frames and all(line.endswith('): A man at a desk talks into a microphone.') for line in frames)
     assert f'[watch] described {len(frames)}/{len(frames)} (' in captured.err
     timing = next(line for line in captured.err.splitlines() if line.startswith('[watch] time: '))
-    assert timing.split(' · ')[-1].startswith('total ')
+    assert re.fullmatch(r'\[watch\] time: (.+ · )?total \d+ s', timing), timing
     assert f'**Frame descriptions:** {len(frames)} via qwen2.5vl:3b' in out
     assert 'open only the frame files' in out and 'Read every `FRAME` file' not in out
     asked = len(server['requests'])
