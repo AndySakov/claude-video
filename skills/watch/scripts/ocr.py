@@ -43,6 +43,8 @@ MISSED_SAMPLES = 2  # OCR flicker tolerance before a line counts as gone
 REOPEN_SECONDS = 2.0
 # Burned-in word-pop captions arrive as many short events; runs of them read as speech.
 CAPTION_WORDS = 5
+# Caption fragments flash past; short text that stays this long is a slide line, label, or code.
+CAPTION_MAX_SECONDS = 2.5
 CAPTION_GAP = 1.5
 CAPTION_RUN_WORDS = 30
 SPOKEN_OVERLAP = 0.6
@@ -264,6 +266,11 @@ def contained(part: str, whole: str) -> bool:
     """``part`` reads as a (possibly misread) piece of ``whole``; scattered letters do not count."""
     if len(part) < 3 or len(part) > len(whole):
         return False
+    # Word-by-word reveals are prefixes; older Tesseract misreads them heavily ("THES 1S").
+    # A reveal starts like its caption, so the first words must agree as well as the prefix.
+    first = difflib.SequenceMatcher(None, part.split()[0], whole.split()[0], autojunk=False).ratio()
+    if first >= 0.5 and difflib.SequenceMatcher(None, part, whole[:len(part)], autojunk=False).ratio() >= 0.6:
+        return True
     blocks = difflib.SequenceMatcher(None, part, whole, autojunk=False).get_matching_blocks()
     return sum(b.size for b in blocks if b.size >= 2) >= 0.7 * len(part)
 
@@ -299,7 +306,8 @@ def drop_recurring(events: list[dict]) -> list[dict]:
 def caption_runs(events: list[dict]) -> list[dict]:
     """Merge consecutive short fragments into sentence-sized ``caption`` events.
 
-    Longer text (slides, UI) is kind ``text`` and does not interrupt a caption run.
+    Longer text (slides, UI) and short text that stays on screen (slide lines, code)
+    are kind ``text`` and do not interrupt a caption run.
     """
     out: list[dict] = []
     run: list[dict] = []
@@ -314,7 +322,7 @@ def caption_runs(events: list[dict]) -> list[dict]:
 
     for event in sorted(events, key=lambda e: e['start']):
         words = len(event['text'].split())
-        if words > CAPTION_WORDS:
+        if words > CAPTION_WORDS or event['end'] - event['start'] > CAPTION_MAX_SECONDS:
             out.append({**event, 'kind': 'text'})
             continue
         if run:

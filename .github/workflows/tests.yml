@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
   workflow_call:
+  workflow_dispatch:  # Manual runs from the Actions tab (e.g. after enabling Actions on a fork).
 
 permissions:
   contents: read
@@ -47,4 +48,4 @@ jobs:
           ffprobe -version
           yt-dlp --version
       - name: Run isolated tests (no model downloads or live APIs)
-        run: python -m pytest -q
+        run: python -m pytest -q -rs  # -rs prints why each test was skipped (e.g. missing OCR engine or font)
