@@ -2,7 +2,7 @@
 
 All notable changes to `/watch` are documented here.
 
-## [Unreleased]
+## [0.6.0] — 2026-10-24
 
 ### Added
 - **Live feeds.** watch records a window of a live source (`--window`, default 60 s, at most 60 min) and runs the normal pipeline on it: a live page yt-dlp understands (YouTube, Twitch, a live `.m3u8`; detected automatically, or asserted with `--live`), a raw `rtsp://`/`rtmp://`/`srt://`/`udp://`/`rtp://` stream, or a capture device written `<format>:<input>` (`avfoundation:0`, `v4l2:/dev/video0`, `dshow:video=…`, `gdigrab:desktop`, `x11grab::0.0`). HLS recording starts at the newest segment; the report's **Live capture** line gives the length and wall-clock start. Live windows are never cached and always use the local engine. Tested on a local real-time HLS stream (3 s behind the burned-in clock), a public live HLS test stream with OCR and Parakeet speech, and a UDP stream.
